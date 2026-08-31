@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import agentic_ecal as ae  # noqa: E402
 import placement as pl  # noqa: E402
 import osi  # noqa: E402
+import osi  # noqa: E402
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -430,83 +431,112 @@ COMPOSITION = (
     ("decode", "e_decode", "#88ccee"),
     ("retrieval", "e_retrieval", "#999933"),
     ("tools", "e_tool", "#ddcc77"),
-    ("inter-agent", "e_transmission", "#117733"),
     ("orchestration", "e_orchestration", "#bbbbbb"),
 )
+TX_COLOUR = "#cc6677"
+
+# Placements of the same workflow, from co-located to distributed over a constrained uplink.
+PLACEMENTS_FIG = (("co-located", None), ("5G RAN", "5g"),
+                  ("loaded cell", "edgecell"), ("NB-IoT", "nbiot"))
 
 
 def _chain(n_calls, model, hw, calib, batch):
-    """A history-carrying chain of ``n_calls`` steps: each reads everything before it."""
+    """A history-carrying chain: each step reads everything produced before it."""
     steps = [ae.Step(agent=f"a{i}", p_in_local=200, p_out=250) for i in range(n_calls)]
     return ae.Workflow(model=model, hw=hw, steps=steps, sys_tokens=400, carry_history=True,
-                       gamma_v=0.10, tx_energy_per_message=0.5, serving_batch=batch,
-                       calib=calib)
+                       gamma_v=0.10, serving_batch=batch, calib=calib)
+
+
+def _tx(wf, bearer_key, cumulative=True):
+    """Inter-agent transmission priced by eCAL Eq. (3); 0 when the agents are co-located."""
+    if bearer_key is None:
+        return 0.0
+    eps = pl.BEARERS[bearer_key].eps
+    return sum(osi.segment_energy(ae.BITS_PER_TOKEN * t, eps)
+               + osi.endpoint_stack_energy(ae.BITS_PER_TOKEN * t)
+               for t in pl.handoff_tokens(wf, cumulative))
 
 
 def fig_components(out_dir):
-    """Where workflow energy goes, and how the agent graph moves it.
+    """What distribution costs: the same workflow, placed four ways.
 
-    Calls are priced with Eq. (3) using the measured coefficients of fig_validation, so the
-    prefill and decode terms of the stack are the two terms of that equation.
+    Calls are priced with Eq. (3) using the measured coefficients of fig_validation; hand-offs are
+    priced with eCAL's OSI model. Shares are of E_W + E_tx, because on a constrained uplink the
+    transmission term is not a small correction to the compute -- it can exceed it.
     """
     hw, calib, batch = CASE_HW, CASE_CALIB, CASE_BATCH
     model = ae.LLMS["llama3_8b"]
     fig, ax = plt.subplots(1, 3, figsize=(7.1, 2.5))
 
-    # (a) composition of three graphs at comparable size
-    cases = [("chain\n(4-agent RAG)",
-              dataclasses.replace(ae.four_agent_rag_workflow(hw=hw),
-                                  serving_batch=batch, calib=calib))]
-    for d in (1, 2):
-        cases.append((f"tree\n$f$=3, $d$={d}",
-                      dataclasses.replace(ae.tree_workflow(model, hw, 3, d, batch=batch),
-                                          calib=calib)))
-    xs, bottoms = np.arange(len(cases)), np.zeros(len(cases))
-    runs = [wf.run() for _, wf in cases]
+    # (a) one workflow, four placements
+    wf = _chain(16, model, hw, calib, batch)
+    r = wf.run()
+    xs, bottoms = np.arange(len(PLACEMENTS_FIG)), np.zeros(len(PLACEMENTS_FIG))
+    txs = np.array([_tx(wf, k) for _, k in PLACEMENTS_FIG])
+    totals = r["e_total"] + txs
     for lab, key, col in COMPOSITION:
-        vals = np.array([100 * r[key] / r["e_total"] for r in runs])
+        vals = 100 * r[key] / totals
         ax[0].bar(xs, vals, 0.6, bottom=bottoms, color=col, label=lab, lw=0.3, edgecolor="white")
         bottoms += vals
-    for x, (name, wf), r in zip(xs, cases, runs):
-        ax[0].annotate(f"{r['e_total']:.0f} J", xy=(x, 101), ha="center", fontsize=5.5)
-    ax[0].set_xticks(xs); ax[0].set_xticklabels([c[0] for c in cases], fontsize=5.5)
-    ax[0].set_ylim(0, 112); ax[0].set_ylabel("% of workflow energy")
-    ax[0].set_title("(a) composition by graph", pad=8)
+    ax[0].bar(xs, 100 * txs / totals, 0.6, bottom=bottoms, color=TX_COLOUR,
+              label="inter-agent", lw=0.3, edgecolor="white")
+    for x, t in zip(xs, totals):
+        ax[0].annotate(f"{t:.0f} J", xy=(x, 101), ha="center", fontsize=5.5)
+    ax[0].set_xticks(xs); ax[0].set_xticklabels([n for n, _ in PLACEMENTS_FIG], fontsize=5.5,
+                                                rotation=15, ha="right")
+    ax[0].set_ylim(0, 112); ax[0].set_ylabel("% of $E_W + E_{\\rm tx}$")
+    ax[0].set_title("(a) four placements", pad=8)
+    ax[0].tick_params(labelsize=6)
+    print("  [placement] " + ", ".join(
+        f"{n}: tx {100*t/tt:.2f}%" for (n, _), t, tt in zip(PLACEMENTS_FIG, txs, totals)))
+
+    # (b) how that grows with the workflow, and what the protocol does about it
+    ns = [4, 8, 16, 32, 64]
+    for cumulative, ls, lab in ((True, "-", "re-ship transcript"), (False, "--", "ship delta")):
+        for key, col in (("nbiot", "#cc6677"), ("edgecell", "#ddaa33")):
+            y = []
+            for n in ns:
+                w = _chain(n, model, hw, calib, batch)
+                y.append(100 * _tx(w, key, cumulative) / w.run()["e_total"])
+            ax[1].loglog(ns, y, ls, color=col, lw=1.3,
+                         label=f"{pl.BEARERS[key].name}, {lab}" if True else None)
+    ax[1].axhline(100, color="k", lw=0.8, ls=":")
+    ax[1].annotate("transmission = compute", xy=(0.03, 0.84), xycoords="axes fraction",
+                   fontsize=5, color="0.3")
+    _decade_free_ticks(ax[1], ns)
+    ax[1].set_xlabel("LLM calls in the chain")
+    ax[1].set_ylabel("$E_{\\rm tx}$ (% of $E_W$)")
+    ax[1].set_title("(b) growth vs protocol", pad=8)
+    ax[1].legend(frameon=False, fontsize=4.5, loc="lower left", labelspacing=0.25)
+    ax[1].tick_params(labelsize=6)
+
+    # (c) which graphs can afford to be distributed: bearer at which tx equals compute
+    eps = np.logspace(-9, -2, 60)
+    graphs = [("chain, 16", _chain(16, model, hw, calib, batch)),
+              ("chain, 64", _chain(64, model, hw, calib, batch)),
+              ("tree $f$=3, $d$=2",
+               dataclasses.replace(ae.tree_workflow(model, hw, 3, 2, batch=batch), calib=calib))]
+    for (name, w), col, ls in zip(graphs, ("#4477aa", "#117733", "#cc6677"), ("-", "--", "-.")):
+        E = w.run()["e_total"]
+        bits = ae.BITS_PER_TOKEN * sum(pl.handoff_tokens(w, True))
+        y = [100 * (osi.cascade_bits(bits) * e + osi.endpoint_stack_energy(bits)) / E for e in eps]
+        ax[2].loglog(eps, y, ls, color=col, lw=1.3, label=name)
+        star = (E - osi.endpoint_stack_energy(bits)) / osi.cascade_bits(bits)
+        print(f"  [parity] {name:<16} transmission equals compute at eps = {star:.1e} J/bit")
+    ax[2].axhline(100, color="k", lw=0.8, ls=":")
+    for key, lab in (("metro", "fibre"), ("5g", "5G"), ("nbiot", "NB-IoT")):
+        ax[2].axvline(pl.BEARERS[key].eps, color="0.8", lw=0.6)
+        ax[2].annotate(lab, xy=(pl.BEARERS[key].eps, 0.03), xycoords=("data", "axes fraction"),
+                       fontsize=4.5, rotation=90, color="0.45")
+    ax[2].set_xlabel("bearer intensity $\\varepsilon$ (J/bit)")
+    ax[2].set_ylabel("$E_{\\rm tx}$ (% of $E_W$)")
+    ax[2].set_title("(c) bearer crossover", pad=8)
+    ax[2].legend(frameon=False, fontsize=5, loc="upper left", labelspacing=0.25)
+    ax[2].tick_params(labelsize=6)
+
     handles, labels = ax[0].get_legend_handles_labels()
     fig.legend(handles, labels, frameon=False, fontsize=5.5, ncol=6, loc="upper center",
                bbox_to_anchor=(0.5, 1.06), columnspacing=1.2, handlelength=1.1)
-    ax[0].tick_params(labelsize=6)
-    for name, r in zip([c[0] for c in cases], runs):
-        print(f"  [{name.replace(chr(10), ' '):<20}] E_W={r['e_total']:6.0f} J  "
-              f"prefill {100*r['e_prefill']/r['e_total']:5.1f}%  "
-              f"decode {100*r['e_decode']/r['e_total']:5.1f}%")
-
-    # (b) and (c): a chain re-reads its transcript, a tree reads only its parent
-    trees = [(2, 1), (2, 2), (2, 3), (3, 3), (4, 3)]
-    n_calls, tree_pre, tree_ecal, chain_pre, chain_ecal = [], [], [], [], []
-    for f, d in trees:
-        t = dataclasses.replace(ae.tree_workflow(model, hw, f, d, batch=batch), calib=calib)
-        c = _chain(len(t.steps), model, hw, calib, batch)
-        rt, rc = t.run(), c.run()
-        n_calls.append(len(t.steps))
-        tree_pre.append(100 * rt["e_prefill"] / rt["e_total"]); tree_ecal.append(t.agentic_ecal())
-        chain_pre.append(100 * rc["e_prefill"] / rc["e_total"]); chain_ecal.append(c.agentic_ecal())
-    for axis, yc, yt, ylab, title in ((ax[1], chain_pre, tree_pre, "prefill (% of $E_W$)",
-                                       "(b) where the energy moves"),
-                                      (ax[2], chain_ecal, tree_ecal, "agentic-eCAL (J/bit)",
-                                       "(c) cost per useful bit")):
-        axis.plot(n_calls, yc, "o-", color="#cc6677", ms=4, lw=1.3, label="chain")
-        axis.plot(n_calls, yt, "s--", color="#4477aa", ms=4, lw=1.3, label="tree")
-        axis.set_xscale("log"); _decade_free_ticks(axis, n_calls)
-        axis.set_xlabel("LLM calls in the workflow"); axis.set_ylabel(ylab)
-        axis.set_title(title); axis.legend(frameon=False, fontsize=6)
-        axis.tick_params(labelsize=6)
-    ax[2].set_yscale("log")
-    print(f"  [scale] chain prefill {chain_pre[0]:.0f}%->{chain_pre[-1]:.0f}%, "
-          f"J/bit {chain_ecal[0]:.4f}->{chain_ecal[-1]:.4f} ({chain_ecal[-1]/chain_ecal[0]:.1f}x); "
-          f"tree {tree_pre[0]:.0f}%->{tree_pre[-1]:.0f}%, "
-          f"{tree_ecal[0]:.4f}->{tree_ecal[-1]:.4f} ({tree_ecal[-1]/tree_ecal[0]:.2f}x)")
-
     _save(fig, out_dir, "fig_components.pdf")
 
 

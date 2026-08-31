@@ -524,14 +524,18 @@ tokens to energy via the per-token model, pending direct measurement.
 \begin{figure*}[t]
   \centering
   \includegraphics[width=\textwidth]{figures/fig_components.pdf}
-    \caption{\ROOF{}Where workflow energy goes, and how the agent graph moves it. Calls are priced
-  with Eq.~\eqref{eq:tworate} using the measured coefficients of Fig.~\ref{fig:validation}, so the
-  prefill and decode bands are its two terms. (a) Composition of a history-carrying chain and of
-  fan-out trees of depth one and two, with $E_W$ annotated above each bar. (b) A chain re-reads its
-  accumulated transcript, so its prefill share climbs from $45\%$ to $83\%$ as the workflow grows;
-  a tree node reads only its parent, so the tree holds near $40\%$ however wide or deep it becomes.
-  (c) The consequence per useful bit: the chain costs $6.2\times$ more at $86$ calls than at $4$,
-  the tree $1.07\times$.\OLD{}}
+    \caption{\ROOF{}What distributing the agents costs. The same $16$-call
+  history-carrying chain is placed four ways; calls are priced with Eq.~\eqref{eq:tworate} using
+  the measured coefficients of Fig.~\ref{fig:validation}, hand-offs with the OSI model of
+  \ecal{}, and shares are of $E_W+E_{\mathrm{tx}}$ because on a constrained uplink transmission
+  is not a small correction. (a) Co-located, over a 5G RAN and over a loaded cell the inter-agent
+  term is invisible ($<\!1\%$); over an NB-IoT uplink it is $41\%$ of the total and the workflow
+  costs $1.7\times$ more. (b) It grows with the workflow, reaching parity with compute at $64$
+  calls---but only when each hand-off re-ships the accumulated transcript. Carrying only the
+  increment since the recipient last saw the conversation collapses it by a factor of $30$.
+  (c) The bearer at which transmission equals compute: $\sim\!10^{-3}$\,J/bit, three orders of
+  magnitude above a 5G bearer, and lower for graphs with more hand-offs per unit of
+  generation.\OLD{}}
   \label{fig:components}
 \end{figure*}
 
