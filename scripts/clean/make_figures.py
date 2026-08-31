@@ -425,31 +425,88 @@ def fig_tokens(data_dir, out_dir):
     _save(fig, out_dir, "fig_tokens.pdf")
 
 
+COMPOSITION = (
+    ("prefill", "e_prefill", "#4477aa"),
+    ("decode", "e_decode", "#88ccee"),
+    ("retrieval", "e_retrieval", "#999933"),
+    ("tools", "e_tool", "#ddcc77"),
+    ("inter-agent", "e_transmission", "#117733"),
+    ("orchestration", "e_orchestration", "#bbbbbb"),
+)
+
+
+def _chain(n_calls, model, hw, calib, batch):
+    """A history-carrying chain of ``n_calls`` steps: each reads everything before it."""
+    steps = [ae.Step(agent=f"a{i}", p_in_local=200, p_out=250) for i in range(n_calls)]
+    return ae.Workflow(model=model, hw=hw, steps=steps, sys_tokens=400, carry_history=True,
+                       gamma_v=0.10, tx_energy_per_message=0.5, serving_batch=batch,
+                       calib=calib)
+
+
 def fig_components(out_dir):
-    """Where the energy goes in the four-agent RAG case study.
+    """Where workflow energy goes, and how the agent graph moves it.
 
-    Calls are priced with Eq. (3) using the measured coefficients of fig_validation, so this
-    figure and the validation figure rest on the same calibration.
+    Calls are priced with Eq. (3) using the measured coefficients of fig_validation, so the
+    prefill and decode terms of the stack are the two terms of that equation.
     """
-    wf = dataclasses.replace(ae.four_agent_rag_workflow(hw=CASE_HW),
-                             serving_batch=CASE_BATCH, calib=CASE_CALIB)
-    r = wf.run()
-    parts = [("LLM calls", r["e_llm"]), ("orchestr.", r["e_orchestration"]),
-             ("retrieval", r["e_retrieval"]), ("tools", r["e_tool"]),
-             ("inter-agent", r["e_transmission"])]
-    labels = [q[0] for q in parts]
-    frac = 100 * np.array([q[1] for q in parts]) / r["e_total"]
+    hw, calib, batch = CASE_HW, CASE_CALIB, CASE_BATCH
+    model = ae.LLMS["llama3_8b"]
+    fig, ax = plt.subplots(1, 3, figsize=(7.1, 2.5))
 
-    fig, ax = plt.subplots(figsize=(3.3, 2.2))
-    ax.bar(labels, frac, color="#4477aa")
-    ax.set_ylabel("% of workflow energy")
-    for i, v in enumerate(frac):
-        ax.text(i, v + 1, f"{v:.0f}", ha="center", fontsize=7)
-    ax.set_ylim(0, 100)
-    ax.set_title(f"{CASE_CALIB.name} coefficients, $b$={CASE_BATCH}", fontsize=8)
-    plt.setp(ax.get_xticklabels(), rotation=25, ha="right")
-    print(f"  E_W = {r['e_total']:.0f} J | "
-          + " | ".join(f"{l} {v:.1f}%" for l, v in zip(labels, frac)))
+    # (a) composition of three graphs at comparable size
+    cases = [("chain\n(4-agent RAG)",
+              dataclasses.replace(ae.four_agent_rag_workflow(hw=hw),
+                                  serving_batch=batch, calib=calib))]
+    for d in (1, 2):
+        cases.append((f"tree\n$f$=3, $d$={d}",
+                      dataclasses.replace(ae.tree_workflow(model, hw, 3, d, batch=batch),
+                                          calib=calib)))
+    xs, bottoms = np.arange(len(cases)), np.zeros(len(cases))
+    runs = [wf.run() for _, wf in cases]
+    for lab, key, col in COMPOSITION:
+        vals = np.array([100 * r[key] / r["e_total"] for r in runs])
+        ax[0].bar(xs, vals, 0.6, bottom=bottoms, color=col, label=lab, lw=0.3, edgecolor="white")
+        bottoms += vals
+    for x, (name, wf), r in zip(xs, cases, runs):
+        ax[0].annotate(f"{r['e_total']:.0f} J", xy=(x, 101), ha="center", fontsize=5.5)
+    ax[0].set_xticks(xs); ax[0].set_xticklabels([c[0] for c in cases], fontsize=5.5)
+    ax[0].set_ylim(0, 112); ax[0].set_ylabel("% of workflow energy")
+    ax[0].set_title("(a) composition by graph", pad=8)
+    handles, labels = ax[0].get_legend_handles_labels()
+    fig.legend(handles, labels, frameon=False, fontsize=5.5, ncol=6, loc="upper center",
+               bbox_to_anchor=(0.5, 1.06), columnspacing=1.2, handlelength=1.1)
+    ax[0].tick_params(labelsize=6)
+    for name, r in zip([c[0] for c in cases], runs):
+        print(f"  [{name.replace(chr(10), ' '):<20}] E_W={r['e_total']:6.0f} J  "
+              f"prefill {100*r['e_prefill']/r['e_total']:5.1f}%  "
+              f"decode {100*r['e_decode']/r['e_total']:5.1f}%")
+
+    # (b) and (c): a chain re-reads its transcript, a tree reads only its parent
+    trees = [(2, 1), (2, 2), (2, 3), (3, 3), (4, 3)]
+    n_calls, tree_pre, tree_ecal, chain_pre, chain_ecal = [], [], [], [], []
+    for f, d in trees:
+        t = dataclasses.replace(ae.tree_workflow(model, hw, f, d, batch=batch), calib=calib)
+        c = _chain(len(t.steps), model, hw, calib, batch)
+        rt, rc = t.run(), c.run()
+        n_calls.append(len(t.steps))
+        tree_pre.append(100 * rt["e_prefill"] / rt["e_total"]); tree_ecal.append(t.agentic_ecal())
+        chain_pre.append(100 * rc["e_prefill"] / rc["e_total"]); chain_ecal.append(c.agentic_ecal())
+    for axis, yc, yt, ylab, title in ((ax[1], chain_pre, tree_pre, "prefill (% of $E_W$)",
+                                       "(b) where the energy moves"),
+                                      (ax[2], chain_ecal, tree_ecal, "agentic-eCAL (J/bit)",
+                                       "(c) cost per useful bit")):
+        axis.plot(n_calls, yc, "o-", color="#cc6677", ms=4, lw=1.3, label="chain")
+        axis.plot(n_calls, yt, "s--", color="#4477aa", ms=4, lw=1.3, label="tree")
+        axis.set_xscale("log"); _decade_free_ticks(axis, n_calls)
+        axis.set_xlabel("LLM calls in the workflow"); axis.set_ylabel(ylab)
+        axis.set_title(title); axis.legend(frameon=False, fontsize=6)
+        axis.tick_params(labelsize=6)
+    ax[2].set_yscale("log")
+    print(f"  [scale] chain prefill {chain_pre[0]:.0f}%->{chain_pre[-1]:.0f}%, "
+          f"J/bit {chain_ecal[0]:.4f}->{chain_ecal[-1]:.4f} ({chain_ecal[-1]/chain_ecal[0]:.1f}x); "
+          f"tree {tree_pre[0]:.0f}%->{tree_pre[-1]:.0f}%, "
+          f"{tree_ecal[0]:.4f}->{tree_ecal[-1]:.4f} ({tree_ecal[-1]/tree_ecal[0]:.2f}x)")
+
     _save(fig, out_dir, "fig_components.pdf")
 
 

@@ -521,13 +521,19 @@ open-weight agentic run, the token share of tool schemas/observations, or the en
 retries; those tool/orchestration terms therefore remain \emph{analytical} estimates that bridge
 tokens to energy via the per-token model, pending direct measurement.
 
-\begin{figure}[t]
+\begin{figure*}[t]
   \centering
-  \includegraphics[width=\columnwidth]{figures/fig_components.pdf}
-    \caption{Energy breakdown of a four-agent RAG workflow on Llama-3 8B. LLM generation dominates
-  ($\sim\!90\%$), followed by orchestration; retrieval, tools, and inter-agent transmission are minor.}
+  \includegraphics[width=\textwidth]{figures/fig_components.pdf}
+    \caption{\ROOF{}Where workflow energy goes, and how the agent graph moves it. Calls are priced
+  with Eq.~\eqref{eq:tworate} using the measured coefficients of Fig.~\ref{fig:validation}, so the
+  prefill and decode bands are its two terms. (a) Composition of a history-carrying chain and of
+  fan-out trees of depth one and two, with $E_W$ annotated above each bar. (b) A chain re-reads its
+  accumulated transcript, so its prefill share climbs from $45\%$ to $83\%$ as the workflow grows;
+  a tree node reads only its parent, so the tree holds near $40\%$ however wide or deep it becomes.
+  (c) The consequence per useful bit: the chain costs $6.2\times$ more at $86$ calls than at $4$,
+  the tree $1.07\times$.\OLD{}}
   \label{fig:components}
-\end{figure}
+\end{figure*}
 
 
 \begin{figure}[t]

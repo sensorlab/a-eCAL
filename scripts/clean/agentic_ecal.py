@@ -29,7 +29,7 @@ __all__ = [
     "HW", "LLMS", "MFU_LATENCY", "MFU_THROUGHPUT", "BITS_PER_TOKEN", "GWH_TO_J",
     "prefill_rate", "decode_rate", "llm_call_energy", "joules_per_token",
     "embedding_flops", "validate_two_rate", "TwoRateCalib", "TWO_RATE",
-    "four_agent_rag_workflow", "debate_workflow",
+    "four_agent_rag_workflow", "tree_workflow", "debate_workflow",
     "validate_against_samsi", "validate_current_gen",
 ]
 
@@ -350,6 +350,7 @@ class Workflow:
         rs = max(self.round_size, 1)
         transcript = []      # (round index, agent, tokens) for outputs and tool observations
         e_llm = e_tool = e_ret = e_tx = 0.0
+        e_prefill = e_decode = 0.0   # the two terms of Eq. (3)
         t_llm = 0.0          # serial compute time of the LLM calls [s]
         useful_out = 0
         prefill_tokens = decode_tokens = 0
@@ -375,10 +376,15 @@ class Workflow:
             p_in = self.sys_tokens + st.p_in_local + added + carried
 
             if self.calib is not None:
-                e_call = self.calib.energy(p_in, st.p_out, self.serving_batch)
+                pre = self.calib.c_pre * p_in
+                dec = self.calib.c_dec(self.serving_batch) * st.p_out
             else:
-                e_call = llm_call_energy(self.model, self.hw, p_in, st.p_out,
-                                         self.serving_batch)
+                cbar = p_in + st.p_out / 2.0
+                pre = prefill_rate(self.model, self.hw) * p_in
+                dec = decode_rate(self.model, self.hw, self.serving_batch, cbar) * st.p_out
+            e_prefill += pre
+            e_decode += dec
+            e_call = pre + dec
             e_llm += e_call
             t_llm += e_call / self.hw.power
             prefill_tokens += p_in
@@ -401,6 +407,8 @@ class Workflow:
         e_total = (1.0 + self.gamma_v) * e_core
         return {
             "e_llm": e_llm,
+            "e_prefill": e_prefill,
+            "e_decode": e_decode,
             "t_llm": t_llm,
             "e_tool": e_tool,
             "e_retrieval": e_ret,
@@ -456,6 +464,29 @@ def four_agent_rag_workflow(model: Optional[LLM] = None, hw: Optional[Hardware] 
     # output within the same pass. Grouping them into one parallel round would remove that.
     return Workflow(model=model or LLMS["llama3_8b"], hw=hw or HW["a100"], steps=steps,
                     carry_history=True, gamma_v=0.10, tx_energy_per_message=0.5)
+
+
+def tree_workflow(model: LLM, hw: Hardware, fanout: int, depth: int,
+                  p_out: int = 250, sys_tokens: int = 400, p_in_root: int = 300,
+                  batch: float = 1.0, aggregate: bool = True) -> Workflow:
+    """A fan-out tree: a root delegates to ``fanout`` children, each of which may delegate again.
+
+    Every node reads only its parent's output, so a node's prompt is bounded by one hand-off
+    however wide or deep the tree becomes. That is the structural difference from a chain, where
+    each step reads the whole accumulated transcript. With ``aggregate`` the root reads its
+    children's outputs back on the way up, which is the only place a prompt grows with fan-out.
+    """
+    steps: List[Step] = [Step(agent="root", p_in_local=p_in_root, p_out=p_out)]
+    nodes = 1
+    for level in range(1, depth + 1):
+        nodes = fanout ** level
+        steps += [Step(agent=f"L{level}_{i}", p_in_local=p_out, p_out=p_out)
+                  for i in range(nodes)]
+    if aggregate:
+        steps.append(Step(agent="root", p_in_local=nodes * p_out, p_out=p_out))
+    return Workflow(model=model, hw=hw, steps=steps, sys_tokens=sys_tokens,
+                    carry_history=False, gamma_v=0.10, tx_energy_per_message=0.5,
+                    serving_batch=batch)
 
 
 def debate_workflow(model: LLM, hw: Hardware, n_agents: int, rounds: int, p_out: float,
