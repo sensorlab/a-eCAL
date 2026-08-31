@@ -1,0 +1,2 @@
+model,task,decode_batch,team_size,rounds,carry_history,enable_thinking,run_id,n_queries,per_query_energy_j,per_query_in_tok,per_query_out_tok,per_query_think_tok,per_query_answer_tok,accuracy,trunc_frac,wall_latency_s
+Qwen/Qwen3-8B,mmlu_hard,64,1,1,1,1,0,2,4543.498,154.0,1505.5,1426.5,79.0,1.0,0.0,30.37

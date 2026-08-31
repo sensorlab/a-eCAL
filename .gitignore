@@ -1,0 +1,39 @@
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+main.pdf
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+
+# Figure previews rendered for review, not deliverables
+*-1.png
+scripts/clean/figures/
+
+# Working notes and superseded scripts, kept locally
+docs/
+bearer-energy-research.md
+scripts/agentic_ecal.py
+scripts/agentic_ecal_v2.py
+scripts/make_figures_current.py
+scripts/fig_ecal_overlay.ipynb
+figures/make_figures_letters.py
+
+# Unrelated manuscripts that happen to live in this working directory
+harnessx.pdf
+Holarchy_ComMag_R1-2.pdf
+main_network_simulation.pdf
+
+# Jupyter and run-marker artifacts inside the results directory
+.ipynb_checkpoints/
+*.done
