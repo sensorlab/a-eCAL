@@ -181,21 +181,25 @@ def measured_rates(df):
 # ---------------------------------------------------------------------------
 
 def fig_scaling(data_dir, out_dir):
-    """Measured scaling in three panels, with single-rate eCAL overlays on (a) and (b)."""
+    """Measured scaling in three panels, with Eq. (3) overlaid on (a) and (b).
+
+    Throughout: markers joined by a heavy line are MEASURED; thin unmarked lines are the MODEL,
+    Eq. (3) evaluated on the same measured token workload at the same serving batch.
+    """
     qwen = ae.LLMS["qwen2_5_7b"]
     fig, ax = plt.subplots(1, 3, figsize=(7.1, 2.3))
 
     # (a) reasoning depth: carry vs free, both models, at the high query budget where the gap shows
     for tag, fname, style, col in [
-            ("Qwen carry",  MEASURED[0][3][0], "o-",  "#1f77b4"),
-            ("Qwen free",   MEASURED[0][3][1], "o--", "#1f77b4"),
-            ("Llama carry", MEASURED[1][3][0], "s-",  "#ff7f0e"),
-            ("Llama free",  MEASURED[1][3][1], "s--", "#ff7f0e")]:
+            ("Qwen carry (meas.)",  MEASURED[0][3][0], "o-",  "#1f77b4"),
+            ("Qwen free (meas.)",   MEASURED[0][3][1], "o--", "#1f77b4"),
+            ("Llama carry (meas.)", MEASURED[1][3][0], "s-",  "#ff7f0e"),
+            ("Llama free (meas.)",  MEASURED[1][3][1], "s--", "#ff7f0e")]:
         x, y = _mean_curve(load(data_dir, fname), "rounds", "per_query_energy_j")
         ax[0].plot(x, y, style, color=col, label=tag, ms=3.5, lw=1.2, zorder=3)
-    # Eq. 5 evaluated on each measured workload at its own serving batch. One curve per model and
-    # condition would be four lines; Qwen2.5-7B (7.615e9 params) and Llama-3.1-8B (8.03e9) are
-    # 5.4% apart and invisible on these axes, so one curve per condition serves both models.
+    # Eq. (3) evaluated on each measured workload at its own serving batch, one curve per model
+    # and condition, in the model's own colour. Drawn pale and unmarked so that the eye separates
+    # model from measurement without needing four more legend entries.
     for label, key, _agents, depth, col, _mk in MEASURED:
         for fname, ls in ((depth[0], "-"), (depth[1], "--")):
             xa, ya = two_rate_curve(load(data_dir, fname), "rounds", key)
@@ -207,19 +211,22 @@ def fig_scaling(data_dir, out_dir):
     ax[0].set_xlabel("reasoning depth $K$ (rounds)")
     ax[0].set_ylabel("energy / query (J)")
     ax[0].set_title("(a) depth: carry vs free")
-    ax[0].legend(frameon=False, fontsize=5)
+    h0, l0 = ax[0].get_legend_handles_labels()
+    h0.append(Line2D([0], [0], color="0.45", lw=1.0, alpha=0.6))
+    l0.append("Eq. (3), model")
+    ax[0].legend(h0, l0, frameon=False, fontsize=5)
 
     # (b) agent count at a small and a large serving batch (Qwen)
     d = load(data_dir, MEASURED[0][2])
     for b, style in [(16, "o-"), (256, "^-")]:
         g = d[d.decode_batch == b].groupby("team_size").per_query_energy_j.mean()
-        ax[1].plot(g.index.values, g.values, style, label=f"batch {b}", ms=4, zorder=3)
-    # One family covers both batches deliberately: the single-rate model has no batch term, so it
-    # cannot separate 16 from 256. That is the blind spot panel (c) and fig_validation quantify.
+        ax[1].plot(g.index.values, g.values, style, label=f"$b$={b} (meas.)", ms=4, zorder=3)
+    # Eq. (3) carries a batch term, so it yields one curve per batch rather than one for both.
     for bb, col in ((16, "C0"), (256, "C1")):
         xb, yb = two_rate_curve(d[d.decode_batch == bb], "team_size",
                                 MEASURED[0][1], batch=bb)
-        ax[1].plot(xb, yb, ":", color=col, lw=1.4, zorder=1)
+        ax[1].plot(xb, yb, ":", color=col, lw=1.4, zorder=1,
+                   label=f"Eq. (3), $b$={bb}")
         meas = d[d.decode_batch == bb].groupby("team_size").per_query_energy_j.mean().values
         err = 100 * (yb - meas) / meas
         print(f"  [scaling b={bb:>3}] Eq.(3) vs measured: {err.min():+.0f}%..{err.max():+.0f}%")
@@ -231,8 +238,7 @@ def fig_scaling(data_dir, out_dir):
     ax[1].set_xlabel("agent count $N$"); ax[1].set_ylabel("energy / query (J)")
     ax[1].set_title("(b) agent count")
     h1, l1 = ax[1].get_legend_handles_labels()
-    h1.append(Line2D([0], [0], color="0.45", ls="-", lw=1.0))
-    l1.append("Eq. (3), measured coeffs.")
+
     ax[1].legend(h1, l1, frameon=False, fontsize=5)
 
     # (c) exponent a vs batch. The single-rate model cannot appear here at all: eta is a constant
@@ -249,8 +255,8 @@ def fig_scaling(data_dir, out_dir):
             slopes = [_loglog_slope(*_mean_curve(gt, "team_size", "per_query_energy_j"))
                       for _, gt in gb.groupby("task")]
             bb.append(float(b)); aa.append(float(np.mean(slopes)))
-        ax[2].plot(bb, aa, "o-" if label.startswith("Qwen") else "s--", label=label, ms=4,
-                   color=col, zorder=3)
+        ax[2].plot(bb, aa, "o-" if label.startswith("Qwen") else "s--",
+                   label=f"{label} (meas.)", ms=4, color=col, zorder=3)
         print(f"  [exponent {label:12s}] measured {aa[0]:.2f}->{aa[-1]:.2f}")
     ax[2].axhline(1.0, color="k", lw=0.6, ls=":")
     ax[2].set_xscale("log")
