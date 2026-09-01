@@ -712,6 +712,10 @@ LINK_RATES = ((1e9, "1 GbE"), (1e10, "10 GbE"), (1e11, "100 GbE"))
 def write_dimensioning_table(out_dir):
     """Site dimensioning: how much compute fits behind a link before hand-offs saturate it.
 
+    The generated table carries its own \\ROOF{} marker inside the float, because a colour set
+    around the \\input never reaches a float: floats are typeset where they land, not where they
+    are declared.
+
     An operator sizes a site in accelerators and its uplink in bit/s. One accelerator serving at
     batch b completes b/t_wall sessions per second, and each session emits a fixed hand-off
     volume, so the offered load per accelerator follows directly and can be compared against a
@@ -741,6 +745,7 @@ def write_dimensioning_table(out_dir):
 ${batch}$ completes ${sessions:.2f}$ sessions per second.}}
 \\label{{tab:dimensioning}}
 \\centering
+\\ROOF{{}}
 \\small
 \\setlength{{\\tabcolsep}}{{4pt}}
 \\begin{{tabular}}{{@{{}}lrrrrrl@{{}}}}
@@ -752,6 +757,7 @@ Hand-off protocol & [Mbit] & [Mb/s] & 1\\,GbE & 10\\,GbE & 100\\,GbE & resource 
 {chr(10).join(rows)}
 \\bottomrule
 \\end{{tabular}}
+\\OLD{{}}
 \\end{{table}}
 """
     path = os.path.join(out_dir, "tab_dimensioning.tex")

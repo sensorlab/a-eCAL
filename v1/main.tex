@@ -13,6 +13,8 @@
 \newif\ifshowchanges \showchangestrue
 \newcommand{\NEW}{\ifshowchanges\color{blue}\fi}
 \newcommand{\OLD}{\ifshowchanges\color{black}\fi}
+% --- second revision, marked green ---
+\newcommand{\ROOF}{\ifshowchanges\color{green!45!black}\fi}
 
 % --- Calibratable numbers (grounded in research-notes.md). Update here only. ---
 \newcommand{\jpertokEightB}{0.46}      % J / output token, Llama-3 8B, H100, latency-bound (model)
@@ -765,12 +767,13 @@ against Llama-3's $15$T.\OLD{}
   \label{fig:latency}
 \end{figure*}
 
-\ROOF{}\input{../tables/tab_dimensioning.tex}\OLD{}
+\input{../tables/tab_dimensioning.tex}
 
 % ===========================================================================
-\ROOF{}\subsection{Latency Budget and Site Dimensioning}\label{sec:latency}\OLD{}
+\begingroup\ROOF{}
+\subsection{\ROOF{}Latency Budget and Site Dimensioning}\label{sec:latency}
 % ===========================================================================
-\ROOF{}The preceding analysis treats energy alone, whereas a deployment is constrained jointly by
+The preceding analysis treats energy alone, whereas a deployment is constrained jointly by
 latency and by the capacity of the site that hosts it. Both constraints admit the same treatment,
 and both lead to the same conclusion regarding placement.
 
@@ -799,7 +802,8 @@ and $2.5\times10^{5}$ accelerators before hand-offs saturate it, a density no si
 compute is the binding resource by four to five orders of magnitude. The ordering inverts only for
 cache migration, where a single accelerator saturates the same link. Provisioning an agentic edge
 site is accordingly a compute-capacity problem, and becomes a transport problem only if cache
-state is moved rather than reconstructed.\OLD{}
+state is moved rather than reconstructed.
+\endgroup\OLD{}
 
 % ===========================================================================
 \section{Discussion and Limitations}\label{sec:discussion}
