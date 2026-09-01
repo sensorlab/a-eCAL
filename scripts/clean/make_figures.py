@@ -25,11 +25,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import agentic_ecal as ae  # noqa: E402
 import placement as pl  # noqa: E402
 import osi  # noqa: E402
-import osi  # noqa: E402
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT_DEFAULT = os.path.join(HERE, "figures")
+# The repo-root figures/ that main.tex includes, so a bare run updates the paper's figures.
+OUT_DEFAULT = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, "figures"))
 
 # ---------------------------------------------------------------------------
 # Configuration
