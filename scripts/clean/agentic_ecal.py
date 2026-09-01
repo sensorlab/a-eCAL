@@ -230,9 +230,10 @@ class TwoRateCalib:
         return self.c_pre * p_in + self.c_dec(batch) * p_out
 
 
-# Qwen shows no measurable cache floor over the contexts swept; Llama's wider KV does.
+# Both models keep a decode floor at large batch, where the weight read has amortised away and
+# the per-token KV traffic is what is left. Llama's wider KV puts its floor ~3x above Qwen's.
 TWO_RATE = {
-    "qwen2_5_7b": TwoRateCalib("Qwen2.5-7B", c_pre=0.023, a_dec=3.2, kv_floor=0.00),
+    "qwen2_5_7b": TwoRateCalib("Qwen2.5-7B", c_pre=0.023, a_dec=3.2, kv_floor=0.02),
     "llama3_8b": TwoRateCalib("Llama-3.1-8B", c_pre=0.028, a_dec=3.3, kv_floor=0.06),
 }
 
