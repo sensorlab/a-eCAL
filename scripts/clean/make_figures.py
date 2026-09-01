@@ -431,112 +431,65 @@ COMPOSITION = (
     ("decode", "e_decode", "#88ccee"),
     ("retrieval", "e_retrieval", "#999933"),
     ("tools", "e_tool", "#ddcc77"),
+    ("inter-agent", "e_transmission", "#117733"),
     ("orchestration", "e_orchestration", "#bbbbbb"),
 )
-TX_COLOUR = "#cc6677"
 
-# Placements of the same workflow, from co-located to distributed over a constrained uplink.
-PLACEMENTS_FIG = (("co-located", None), ("5G RAN", "5g"),
-                  ("loaded cell", "edgecell"), ("NB-IoT", "nbiot"))
-
-
-def _chain(n_calls, model, hw, calib, batch):
-    """A history-carrying chain: each step reads everything produced before it."""
-    steps = [ae.Step(agent=f"a{i}", p_in_local=200, p_out=250) for i in range(n_calls)]
-    return ae.Workflow(model=model, hw=hw, steps=steps, sys_tokens=400, carry_history=True,
-                       gamma_v=0.10, serving_batch=batch, calib=calib)
-
-
-def _tx(wf, bearer_key, cumulative=True):
-    """Inter-agent transmission priced by eCAL Eq. (3); 0 when the agents are co-located."""
-    if bearer_key is None:
-        return 0.0
-    eps = pl.BEARERS[bearer_key].eps
-    return sum(osi.segment_energy(ae.BITS_PER_TOKEN * t, eps)
-               + osi.endpoint_stack_energy(ae.BITS_PER_TOKEN * t)
-               for t in pl.handoff_tokens(wf, cumulative))
+COMP_BATCHES = (1, 64, 256)     # single-stream, production, and the largest measured batch
+COMP_ROUNDS = [1, 2, 3, 4, 5, 6]
 
 
 def fig_components(out_dir):
-    """What distribution costs: the same workflow, placed four ways.
+    """How the composition of workflow energy moves with loop depth, at three serving batches.
 
-    Calls are priced with Eq. (3) using the measured coefficients of fig_validation; hand-offs are
-    priced with eCAL's OSI model. Shares are of E_W + E_tx, because on a constrained uplink the
-    transmission term is not a small correction to the compute -- it can exceed it.
+    The four-agent RAG team is re-run over its own transcript for K = 1..6 rounds, the depth range
+    the measured sweeps cover. Calls are priced with Eq. (3) using the measured coefficients of
+    fig_validation, so the prefill and decode bands are its two terms. The black curve is total
+    E_W on the right-hand axis, fixed to one range across panels so the regimes are comparable.
     """
-    hw, calib, batch = CASE_HW, CASE_CALIB, CASE_BATCH
-    model = ae.LLMS["llama3_8b"]
-    fig, ax = plt.subplots(1, 3, figsize=(7.1, 2.5))
+    hw, calib = CASE_HW, CASE_CALIB
+    fig, axes = plt.subplots(1, len(COMP_BATCHES), figsize=(7.1, 2.6), sharey=True)
 
-    # (a) one workflow, four placements
-    wf = _chain(16, model, hw, calib, batch)
-    r = wf.run()
-    xs, bottoms = np.arange(len(PLACEMENTS_FIG)), np.zeros(len(PLACEMENTS_FIG))
-    txs = np.array([_tx(wf, k) for _, k in PLACEMENTS_FIG])
-    totals = r["e_total"] + txs
-    for lab, key, col in COMPOSITION:
-        vals = 100 * r[key] / totals
-        ax[0].bar(xs, vals, 0.6, bottom=bottoms, color=col, label=lab, lw=0.3, edgecolor="white")
-        bottoms += vals
-    ax[0].bar(xs, 100 * txs / totals, 0.6, bottom=bottoms, color=TX_COLOUR,
-              label="inter-agent", lw=0.3, edgecolor="white")
-    for x, t in zip(xs, totals):
-        ax[0].annotate(f"{t:.0f} J", xy=(x, 101), ha="center", fontsize=5.5)
-    ax[0].set_xticks(xs); ax[0].set_xticklabels([n for n, _ in PLACEMENTS_FIG], fontsize=5.5,
-                                                rotation=15, ha="right")
-    ax[0].set_ylim(0, 112); ax[0].set_ylabel("% of $E_W + E_{\\rm tx}$")
-    ax[0].set_title("(a) four placements", pad=8)
-    ax[0].tick_params(labelsize=6)
-    print("  [placement] " + ", ".join(
-        f"{n}: tx {100*t/tt:.2f}%" for (n, _), t, tt in zip(PLACEMENTS_FIG, txs, totals)))
+    for col, (ax, batch) in enumerate(zip(axes, COMP_BATCHES)):
+        shares = {k: [] for _, k, _ in COMPOSITION}
+        totals = []
+        for depth in COMP_ROUNDS:
+            wf = dataclasses.replace(ae.four_agent_rag_workflow(hw=hw, rounds=depth),
+                                     serving_batch=batch, calib=calib)
+            r = wf.run()
+            totals.append(r["e_total"])
+            for _, key, _c in COMPOSITION:
+                shares[key].append(100.0 * r[key] / r["e_total"])
 
-    # (b) how that grows with the workflow, and what the protocol does about it
-    ns = [4, 8, 16, 32, 64]
-    for cumulative, ls, lab in ((True, "-", "re-ship transcript"), (False, "--", "ship delta")):
-        for key, col in (("nbiot", "#cc6677"), ("edgecell", "#ddaa33")):
-            y = []
-            for n in ns:
-                w = _chain(n, model, hw, calib, batch)
-                y.append(100 * _tx(w, key, cumulative) / w.run()["e_total"])
-            ax[1].loglog(ns, y, ls, color=col, lw=1.3,
-                         label=f"{pl.BEARERS[key].name}, {lab}" if True else None)
-    ax[1].axhline(100, color="k", lw=0.8, ls=":")
-    ax[1].annotate("transmission = compute", xy=(0.03, 0.84), xycoords="axes fraction",
-                   fontsize=5, color="0.3")
-    _decade_free_ticks(ax[1], ns)
-    ax[1].set_xlabel("LLM calls in the chain")
-    ax[1].set_ylabel("$E_{\\rm tx}$ (% of $E_W$)")
-    ax[1].set_title("(b) growth vs protocol", pad=8)
-    ax[1].legend(frameon=False, fontsize=4.5, loc="lower left", labelspacing=0.25)
-    ax[1].tick_params(labelsize=6)
+        ax.stackplot(COMP_ROUNDS, [shares[k] for _, k, _ in COMPOSITION],
+                     labels=[lab for lab, _, _ in COMPOSITION],
+                     colors=[c for _, _, c in COMPOSITION], lw=0.3, edgecolor="white")
+        ax.set_xlim(min(COMP_ROUNDS), max(COMP_ROUNDS)); ax.set_ylim(0, 100)
+        ax.set_xticks(COMP_ROUNDS)
+        ax.set_title("single-stream" if batch == 1 else f"batch {batch}", fontsize=7.5)
+        ax.set_xlabel("rounds $K$ of the four-agent team", fontsize=7)
+        ax.grid(False); ax.tick_params(labelsize=6)
+        if col:
+            ax.tick_params(labelleft=False)
 
-    # (c) which graphs can afford to be distributed: bearer at which tx equals compute
-    eps = np.logspace(-9, -2, 60)
-    graphs = [("chain, 16", _chain(16, model, hw, calib, batch)),
-              ("chain, 64", _chain(64, model, hw, calib, batch)),
-              ("tree $f$=3, $d$=2",
-               dataclasses.replace(ae.tree_workflow(model, hw, 3, 2, batch=batch), calib=calib))]
-    for (name, w), col, ls in zip(graphs, ("#4477aa", "#117733", "#cc6677"), ("-", "--", "-.")):
-        E = w.run()["e_total"]
-        bits = ae.BITS_PER_TOKEN * sum(pl.handoff_tokens(w, True))
-        y = [100 * (osi.cascade_bits(bits) * e + osi.endpoint_stack_energy(bits)) / E for e in eps]
-        ax[2].loglog(eps, y, ls, color=col, lw=1.3, label=name)
-        star = (E - osi.endpoint_stack_energy(bits)) / osi.cascade_bits(bits)
-        print(f"  [parity] {name:<16} transmission equals compute at eps = {star:.1e} J/bit")
-    ax[2].axhline(100, color="k", lw=0.8, ls=":")
-    for key, lab in (("metro", "fibre"), ("5g", "5G"), ("nbiot", "NB-IoT")):
-        ax[2].axvline(pl.BEARERS[key].eps, color="0.8", lw=0.6)
-        ax[2].annotate(lab, xy=(pl.BEARERS[key].eps, 0.03), xycoords=("data", "axes fraction"),
-                       fontsize=4.5, rotation=90, color="0.45")
-    ax[2].set_xlabel("bearer intensity $\\varepsilon$ (J/bit)")
-    ax[2].set_ylabel("$E_{\\rm tx}$ (% of $E_W$)")
-    ax[2].set_title("(c) bearer crossover", pad=8)
-    ax[2].legend(frameon=False, fontsize=5, loc="upper left", labelspacing=0.25)
-    ax[2].tick_params(labelsize=6)
+        rhs = ax.twinx()
+        rhs.plot(COMP_ROUNDS, totals, "k-", lw=1.4, marker="o", ms=3, zorder=5,
+                 path_effects=[pe.Stroke(linewidth=3.0, foreground="white"), pe.Normal()])
+        rhs.set_yscale("log"); rhs.set_ylim(150, 6e4); rhs.grid(False)
+        rhs.tick_params(labelsize=6)
+        if col == len(COMP_BATCHES) - 1:
+            rhs.set_ylabel("$E_W$ (J)", fontsize=7, labelpad=1)
+        else:
+            rhs.set_yticklabels([])
 
-    handles, labels = ax[0].get_legend_handles_labels()
+        print(f"  batch {batch:>3}: prefill {shares['e_prefill'][0]:5.1f}%->{shares['e_prefill'][-1]:5.1f}%"
+              f"  decode {shares['e_decode'][0]:5.1f}%->{shares['e_decode'][-1]:5.1f}%"
+              f"  E_W {totals[0]:6.0f}->{totals[-1]:7.0f} J")
+
+    axes[0].set_ylabel("% of workflow energy", fontsize=7)
+    handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, frameon=False, fontsize=5.5, ncol=6, loc="upper center",
-               bbox_to_anchor=(0.5, 1.06), columnspacing=1.2, handlelength=1.1)
+               bbox_to_anchor=(0.5, 1.07), columnspacing=1.2, handlelength=1.1)
     _save(fig, out_dir, "fig_components.pdf")
 
 
@@ -579,6 +532,234 @@ def fig_amortization(out_dir):
 # Placement: what distribution actually costs, and where the cost lives
 # ---------------------------------------------------------------------------
 
+
+# Every bearer of the placement table except the NB-IoT uplink, which no operator would use to
+# carry agent state and is the only one on which transmission is not a small term.
+COMM_BEARERS = ("metro", "ftth", "5g", "edgecell")
+
+# How a hand-off can carry the state its successor needs. These are the protocol choices open to
+# a distributed agentic deployment, not properties of the network.
+PROTOCOLS = (("full context", "#cc6677"),      # re-ship the accumulated transcript
+             ("incremental", "#4477aa"),       # only what the sender just produced
+             ("summary", "#ddaa33"),           # a bounded running summary
+             ("KV migration", "#882255"))      # ship the cache instead of rebuilding it
+COMM_N, COMM_K, COMM_POUT, SUMMARY_TOKENS = 4, 3, 250, 400
+
+
+def _protocol_messages(kind, n_agents=COMM_N, rounds=COMM_K, p_out=COMM_POUT):
+    """Tokens carried by each hand-off under one protocol."""
+    out, produced = [], 0.0
+    for _ in range(rounds):
+        for _i in range(n_agents):
+            produced += p_out
+            if kind == "full context":
+                out.append(produced)
+            elif kind == "incremental":
+                out.append(p_out)
+            elif kind == "summary":
+                out.append(min(produced, SUMMARY_TOKENS))
+    return out
+
+
+def _protocol_bits(kind, model):
+    """Bits a hand-off puts on the wire; the cache is bytes, not tokens."""
+    if kind == "KV migration":
+        ctx = COMM_N * COMM_K * COMM_POUT / 2.0
+        return [model.kv_bytes_per_token * ctx * 8.0] * (COMM_N * COMM_K)
+    return [ae.BITS_PER_TOKEN * t for t in _protocol_messages(kind)]
+
+
+def fig_comm(out_dir):
+    """Communication-efficient distributed reasoning: what the hand-off protocol costs.
+
+    The four protocols carry the same conversation between the same agents over the same links.
+    What differs is what each hand-off must contain, and that choice spans five orders of
+    magnitude in traffic, energy and added latency.
+    """
+    hw, calib, batch = CASE_HW, CASE_CALIB, CASE_BATCH
+    model = ae.LLMS["llama3_8b"]
+    e_w = dataclasses.replace(ae.four_agent_rag_workflow(hw=hw, rounds=COMM_K),
+                              serving_batch=batch, calib=calib).run()["e_total"]
+    fig, ax = plt.subplots(1, 3, figsize=(7.1, 2.4))
+    xs = np.arange(len(PROTOCOLS))
+
+    # (a) traffic the protocol puts on the wire
+    vols = [sum(_protocol_bits(k, model)) / 1e6 for k, _ in PROTOCOLS]
+    ax[0].bar(xs, vols, 0.6, color=[c for _, c in PROTOCOLS])
+    for x, v in zip(xs, vols):
+        ax[0].annotate(f"{v:,.3g}", xy=(x, v * 1.6), ha="center", fontsize=5)
+    ax[0].set_yscale("log"); ax[0].set_ylim(1e-2, 1e6)
+    ax[0].set_xticks(xs); ax[0].set_xticklabels([k for k, _ in PROTOCOLS], fontsize=5.5,
+                                                rotation=20, ha="right")
+    ax[0].set_ylabel("traffic per session (Mbit)")
+    ax[0].set_title("(a) what a hand-off carries")
+    ax[0].tick_params(labelsize=6)
+
+    # (b) the energy that traffic costs, as a share of the compute it accompanies
+    width = 0.2
+    for j, (kind, col) in enumerate(PROTOCOLS):
+        bits = _protocol_bits(kind, model)
+        vals = [100 * sum(osi.segment_energy(x, pl.BEARERS[b].eps)
+                          + osi.endpoint_stack_energy(x) for x in bits) / e_w
+                for b in COMM_BEARERS]
+        ax[1].bar(np.arange(len(COMM_BEARERS)) + (j - 1.5) * width, vals, width,
+                  color=col, label=kind)
+        print(f"  [{kind:<13}] traffic {sum(bits)/1e6:9.3f} Mb | "
+              + ", ".join(f"{pl.BEARERS[b].name.split()[0]} {v:.3g}%"
+                          for b, v in zip(COMM_BEARERS, vals)))
+    ax[1].axhline(100, color="k", lw=0.7, ls=":")
+    ax[1].set_yscale("log"); ax[1].set_xticks(np.arange(len(COMM_BEARERS)))
+    ax[1].set_xticklabels([pl.BEARERS[b].name.replace(" / copper access", "")
+                           for b in COMM_BEARERS], fontsize=5, rotation=20, ha="right")
+    ax[1].set_ylabel("$E_{\\rm tx}$ (% of $E_W$)")
+    ax[1].set_title("(b) cost against the compute")
+    ax[1].legend(frameon=False, fontsize=4.5, ncol=2); ax[1].tick_params(labelsize=6)
+
+    # (c) and the latency it adds, which is what an agentic loop actually feels
+    for kind, col in PROTOCOLS:
+        bits = _protocol_bits(kind, model)
+        lat = [1e3 * (osi.cascade_bits(sum(bits)) / pl.BEARERS[b].rate
+                      + len(bits) * pl.BEARERS[b].latency) for b in COMM_BEARERS]
+        ax[2].semilogy(np.arange(len(COMM_BEARERS)), lat, "o-", color=col, ms=3.5, lw=1.2,
+                       label=kind)
+        print(f"  [{kind:<13}] added latency {lat[0]:,.0f}-{lat[-1]:,.0f} ms across the links")
+    ax[2].set_xticks(np.arange(len(COMM_BEARERS)))
+    ax[2].set_xticklabels([pl.BEARERS[b].name.replace(" / copper access", "")
+                           for b in COMM_BEARERS], fontsize=5, rotation=20, ha="right")
+    ax[2].set_ylabel("added latency (ms)")
+    ax[2].set_title("(c) latency the loop feels")
+    ax[2].legend(frameon=False, fontsize=4.5); ax[2].tick_params(labelsize=6)
+
+    _save(fig, out_dir, "fig_comm.pdf")
+
+
+
+LAT_BATCHES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+
+
+def fig_latency(out_dir):
+    """The latency budget of an agentic loop, and what actually trades against energy.
+
+    Distributing the agents adds network latency; batching them adds queueing latency. The two
+    differ by three orders of magnitude, which decides where a latency-constrained deployment has
+    any freedom.
+    """
+    hw, calib = CASE_HW, CASE_CALIB
+    rounds, hops = COMM_K, 3
+    n_handoffs = COMM_N * rounds - 1
+    fig, ax = plt.subplots(1, 3, figsize=(7.1, 2.4))
+
+    # (a) end-to-end budget: generation against the network that carries the hand-offs
+    base = dataclasses.replace(ae.four_agent_rag_workflow(hw=hw, rounds=rounds),
+                               serving_batch=CASE_BATCH, calib=calib).run()
+    compute = base["t_wall"]
+    nets = [hops * pl.BEARERS[b].latency * n_handoffs for b in COMM_BEARERS]
+    xs = np.arange(len(COMM_BEARERS))
+    ax[0].bar(xs, [compute] * len(xs), 0.6, color="#4477aa", label="generation")
+    ax[0].bar(xs, nets, 0.6, bottom=[compute] * len(xs), color="#cc6677", label="network, 3 hops")
+    for x, n in zip(xs, nets):
+        ax[0].annotate(f"{100*n/compute:.2f}%", xy=(x, compute + n), ha="center",
+                       va="bottom", fontsize=5)
+    ax[0].set_xticks(xs)
+    ax[0].set_xticklabels([pl.BEARERS[b].name.replace(" / copper access", "")
+                           for b in COMM_BEARERS], fontsize=5, rotation=20, ha="right")
+    ax[0].set_ylabel("end-to-end latency (s)")
+    ax[0].set_title("(a) the latency budget")
+    ax[0].legend(frameon=False, fontsize=5.5); ax[0].tick_params(labelsize=6)
+    print(f"  [latency] generation {compute:.0f} s; network 3 hops "
+          + ", ".join(f"{pl.BEARERS[b].name.split()[0]} {1e3*n:.0f} ms ({100*n/compute:.2f}%)"
+                      for b, n in zip(COMM_BEARERS, nets)))
+
+    # (b) the trade that is actually available: serving batch
+    es, ts = [], []
+    for b in LAT_BATCHES:
+        r = dataclasses.replace(ae.four_agent_rag_workflow(hw=hw, rounds=rounds),
+                                serving_batch=b, calib=calib).run()
+        es.append(r["e_total"]); ts.append(r["t_wall"])
+    ax[1].plot(ts, es, "o-", color="#117733", ms=3.5, lw=1.2)
+    for b, t, e in zip(LAT_BATCHES, ts, es):
+        if b in (1, 16, 64, 512):
+            ax[1].annotate(f"$b$={b}", xy=(t, e), xytext=(4, 4), textcoords="offset points",
+                           fontsize=5)
+    ax[1].set_xscale("log"); ax[1].set_yscale("log")
+    ax[1].set_xlabel("end-to-end latency (s)"); ax[1].set_ylabel("$E_W$ (J)")
+    ax[1].set_title("(b) the batch Pareto")
+    ax[1].tick_params(labelsize=6)
+    print(f"  [pareto] b=1: {es[0]:.0f} J in {ts[0]:.0f} s;  b=512: {es[-1]:.0f} J in {ts[-1]:.0f} s "
+          f"({es[0]/es[-1]:.1f}x energy for {ts[-1]/ts[0]:.1f}x latency)")
+
+    # (c) what a latency budget permits, against the workflow that must fit in it
+    depths = [1, 2, 3, 4, 5, 6]
+    for b, col in ((1, "#cc6677"), (16, "#ddaa33"), (64, "#4477aa"), (256, "#117733")):
+        lat = [dataclasses.replace(ae.four_agent_rag_workflow(hw=hw, rounds=k),
+                                   serving_batch=b, calib=calib).run()["t_wall"] for k in depths]
+        ax[2].semilogy(depths, lat, "o-", color=col, ms=3, lw=1.2, label=f"$b$={b}")
+    for sla, lab in ((1.0, "1 s"), (10.0, "10 s"), (60.0, "1 min")):
+        ax[2].axhline(sla, color="0.75", lw=0.6, ls=":")
+        ax[2].annotate(lab, xy=(6.0, sla * 1.15), ha="right", fontsize=4.5, color="0.45")
+    ax[2].set_xticks(depths)
+    ax[2].set_xlabel("rounds $K$"); ax[2].set_ylabel("end-to-end latency (s)")
+    ax[2].set_title("(c) against a latency budget")
+    ax[2].legend(frameon=False, fontsize=5); ax[2].tick_params(labelsize=6)
+
+    _save(fig, out_dir, "fig_latency.pdf")
+
+
+
+LINK_RATES = ((1e9, "1 GbE"), (1e10, "10 GbE"), (1e11, "100 GbE"))
+
+
+def write_dimensioning_table(out_dir):
+    """Site dimensioning: how much compute fits behind a link before hand-offs saturate it.
+
+    An operator sizes a site in accelerators and its uplink in bit/s. One accelerator serving at
+    batch b completes b/t_wall sessions per second, and each session emits a fixed hand-off
+    volume, so the offered load per accelerator follows directly and can be compared against a
+    link rate. Writes tables/tab_dimensioning.tex.
+    """
+    hw, calib, batch = CASE_HW, CASE_CALIB, CASE_BATCH
+    model = ae.LLMS["llama3_8b"]
+    r = dataclasses.replace(ae.four_agent_rag_workflow(hw=hw, rounds=COMM_K),
+                            serving_batch=batch, calib=calib).run()
+    sessions = batch / r["t_wall"]
+
+    rows = []
+    for kind, _col in PROTOCOLS:
+        bits = sum(_protocol_bits(kind, model))
+        load = sessions * bits
+        per_link = [rate / load for rate, _ in LINK_RATES]
+        binding = "compute" if per_link[1] > 1 else "network"
+        rows.append(f"{kind} & {bits/1e6:,.3g} & {load/1e6:,.3g} & "
+                    + " & ".join(f"{v:,.0f}" if v >= 1 else f"{v:.2f}" for v in per_link)
+                    + f" & {binding} \\\\")
+        print(f"  [dimension] {kind:<13} {bits/1e6:9.3g} Mb/session, {load/1e6:9.3g} Mb/s per "
+              f"accelerator, {per_link[1]:,.1f} accelerators per 10 GbE ({binding}-bound)")
+
+    tex = f"""% Generated by scripts/clean/make_figures.py -- do not edit by hand.
+\\begin{{table}}[t]
+\\caption{{Site dimensioning for an agentic service. One accelerator serving at batch
+${batch}$ completes ${sessions:.2f}$ sessions per second.}}
+\\label{{tab:dimensioning}}
+\\centering
+\\small
+\\setlength{{\\tabcolsep}}{{4pt}}
+\\begin{{tabular}}{{@{{}}lrrrrrl@{{}}}}
+\\toprule
+ & traffic & load & \\multicolumn{{3}}{{c}}{{accelerators per link}} & binding \\\\
+\\cmidrule(lr){{4-6}}
+Hand-off protocol & [Mbit] & [Mb/s] & 1\\,GbE & 10\\,GbE & 100\\,GbE & resource \\\\
+\\midrule
+{chr(10).join(rows)}
+\\bottomrule
+\\end{{tabular}}
+\\end{{table}}
+"""
+    path = os.path.join(out_dir, "tab_dimensioning.tex")
+    with open(path, "w") as fh:
+        fh.write(tex)
+    print(f"wrote {os.path.basename(path)}")
+
+
 def _save(fig, out_dir, name):
     fig.tight_layout()
     fig.savefig(os.path.join(out_dir, name))
@@ -590,7 +771,8 @@ def _save(fig, out_dir, name):
 # CLI
 # ---------------------------------------------------------------------------
 
-ALL_FIGS = ("scaling", "validation", "tokens", "components", "amortization")
+ALL_FIGS = ("scaling", "validation", "tokens", "components", "amortization", "comm",
+            "latency")
 NEEDS_DATA = {"scaling", "validation", "tokens"}
 
 
@@ -629,6 +811,10 @@ def main(argv=None):
             fig_components(a.out)
         elif name == "amortization":
             fig_amortization(a.out)
+        elif name == "comm":
+            fig_comm(a.out)
+        elif name == "latency":
+            fig_latency(a.out)
         print()
 
 

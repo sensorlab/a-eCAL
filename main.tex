@@ -524,18 +524,17 @@ tokens to energy via the per-token model, pending direct measurement.
 \begin{figure*}[t]
   \centering
   \includegraphics[width=\textwidth]{figures/fig_components.pdf}
-    \caption{\ROOF{}What distributing the agents costs. The same $16$-call
-  history-carrying chain is placed four ways; calls are priced with Eq.~\eqref{eq:tworate} using
-  the measured coefficients of Fig.~\ref{fig:validation}, hand-offs with the OSI model of
-  \ecal{}, and shares are of $E_W+E_{\mathrm{tx}}$ because on a constrained uplink transmission
-  is not a small correction. (a) Co-located, over a 5G RAN and over a loaded cell the inter-agent
-  term is invisible ($<\!1\%$); over an NB-IoT uplink it is $41\%$ of the total and the workflow
-  costs $1.7\times$ more. (b) It grows with the workflow, reaching parity with compute at $64$
-  calls---but only when each hand-off re-ships the accumulated transcript. Carrying only the
-  increment since the recipient last saw the conversation collapses it by a factor of $30$.
-  (c) The bearer at which transmission equals compute: $\sim\!10^{-3}$\,J/bit, three orders of
-  magnitude above a 5G bearer, and lower for graphs with more hand-offs per unit of
-  generation.\OLD{}}
+    \caption{\ROOF{}Composition of workflow energy against loop depth, at three serving batches.
+  The four-agent RAG team is re-run over its own transcript for $K=1\dots6$ rounds, the depth
+  range the measured sweeps cover; calls are priced with Eq.~\eqref{eq:tworate} using the measured
+  coefficients of Fig.~\ref{fig:validation}, so the prefill and decode bands are its two terms.
+  The black curve is total $E_W$ on the right-hand axis, on one scale across all three panels.
+  Batch and depth move the composition in the same direction and independently: at single-stream
+  serving the workflow is $87\%$ decode, because the weight read is amortised over nothing; at
+  batch $256$ it is already $58\%$ prefill at $K=1$. Within every panel prefill then climbs as the
+  transcript accumulates---$3.6$ to $11\%$ single-stream, $49$ to $73\%$ at batch $64$. A workflow
+  that is decode-bound when serving one user is therefore prefill-bound in production, and
+  deepening the loop pushes it further that way at any batch.\OLD{}}
   \label{fig:components}
 \end{figure*}
 
@@ -570,6 +569,18 @@ negligible \emph{unless} a tool itself performs heavy computation. The practical
 agentic energy is overwhelmingly \emph{generated- and processed-token} energy, which is exactly the
 quantity token amplification inflates.
 
+\ROOF{}Which of the two token classes carries that energy is not fixed, however, and
+Fig.~\ref{fig:components} separates the two things that move it. Serving batch sets the starting
+point: at single-stream the workflow is $87\%$ decode, because each generated token pays the whole
+weight read, whereas at batch $256$ that read is amortised over the batch and the same workflow
+begins $58\%$ prefill. Loop depth then moves it further in the same direction at any batch, since
+the transcript accumulates while generated output does not---prefill climbs from $3.6\%$ to $11\%$
+single-stream and from $49\%$ to $73\%$ at batch $64$ over six rounds. A workflow profiled on one
+user is therefore a poor guide to the same workflow in production: it is decode-bound in the first
+case and prefill-bound in the second, which inverts what is worth optimising. Absolute energy moves
+the other way, batching cutting $E_W$ roughly $14\times$ at every depth, so the two effects must be
+read together.\OLD{}
+
 
 \textbf{Scaling.} Fig.~\ref{fig:scaling} shows the measured scaling against reasoning depth (carry
 vs.\ free), agent count, and serving batch. \NEW{}The overlays locate the measurements in $\eta$:
@@ -587,6 +598,21 @@ re-read as prefill (history), they consume energy without enlarging the useful-o
 denominator, the per-bit signature of the \reasoningBlow{} token amplification reported for reasoning
 models~\cite{llmthinkbench2025}.
 
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig_comm.pdf}
+  \caption{\ROOF{}Communication-efficient distributed reasoning. Four hand-off protocols carry the
+  same conversation between the same four agents over $K=3$ rounds, on the links of
+  Table~\ref{tab:placement} other than the NB-IoT uplink. (a) Traffic per session: re-shipping the
+  accumulated context costs $6.5\times$ an incremental hand-off, and migrating the key-value cache
+  costs $5.7\times10^{5}$ times as much. (b) The resulting energy relative to the compute it
+  accompanies; the dotted line marks parity. (c) The latency the loop incurs. Text-carrying
+  protocols remain below $0.7\%$ of workflow energy on every link, whereas cache migration exceeds
+  the compute by two to four orders of magnitude and is feasible only over datacentre
+  interconnect.\OLD{}}
+  \label{fig:comm}
+\end{figure*}
+
 \subsection{Communication Energy of a Distributed RAG Workflow}  \NEW The workflow above is a natural candidate for
 distribution, so we place it three ways (co-located on a single host, split once between edge and
 core, and fully distributed over three hops) and price the hand-offs with the OSI transmission
@@ -603,6 +629,22 @@ magnitude short of parity.\OLD{} \NEW{}On the fixed and core rows this over-char
 an already-lit router draws essentially the same power whether or not it carries the
 packet~\cite{jacob2025routers}, so the incremental cost of a hand-off there is well below
 $\varepsilon$; the mobile rows carry no such slack, a radio drawing power while it transmits.\OLD{}
+\ROOF{}Fig.~\ref{fig:comm} isolates the choice that governs this cost, which is the
+hand-off protocol rather than the bearer or the topology. A distributed agent requires the state
+its predecessor accumulated, and four mechanisms are available for supplying it. Re-shipping the
+accumulated context, as a stateless endpoint must, transmits $0.33$\,Mbit per session; carrying
+only the increment produced since the recipient last observed the conversation transmits
+$0.051$\,Mbit, a factor of $6.5$; a bounded running summary lies between the two. Migrating the
+key-value cache instead of reconstructing it transmits $18.9$\,Gbit, five orders of magnitude
+above the transcript, because the cache of a single token occupies $131$\,kB against the $17$ bits
+of the token itself. The consequences separate sharply. All three text-carrying protocols remain
+below $0.7\%$ of workflow energy on every link considered and add at most $339$\,ms; cache
+migration exceeds the compute by two to four orders of magnitude and adds $2.2\times10^{3}$\,s on
+a loaded cell, confining it to datacentre interconnect. Communication efficiency in a distributed
+agentic deployment is therefore obtained at the protocol layer, and the available margin is a
+factor of six rather than a matter of bearer selection.\OLD{}
+
+
 Solving $E_{\mathrm{tx}}=\sum_k E_{\mathrm{call}}^{(k)}$ quantifies the margin:
 transmission equals compute only at $\varepsilon\approx\parityJpb$\,J/b, some \parityFactor{} times a
 typical mobile bearer, or equivalently if each invocation shipped \parityVolume{} of state instead
@@ -709,6 +751,54 @@ against Llama-3's $15$T.\OLD{}
 
 
 
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig_latency.pdf}
+  \caption{\ROOF{}The latency budget of a distributed agentic loop. (a) End-to-end time for the
+  four-agent workflow at $K=3$ and $b=64$, decomposed into generation and the network carrying its
+  eleven hand-offs over three hops; the network contributes between $0.08\%$ and $1.02\%$ across
+  the links of Table~\ref{tab:placement}. (b) The trade that is available: serving batch, over
+  which energy falls $10.8\times$ while latency rises $10.7\times$. (c) End-to-end time against
+  loop depth at four batches, with reference budgets marked.\OLD{}}
+  \label{fig:latency}
+\end{figure*}
+
+\ROOF{}\input{tables/tab_dimensioning.tex}\OLD{}
+
+% ===========================================================================
+\ROOF{}\subsection{Latency Budget and Site Dimensioning}\label{sec:latency}\OLD{}
+% ===========================================================================
+\ROOF{}The preceding analysis treats energy alone, whereas a deployment is constrained jointly by
+latency and by the capacity of the site that hosts it. Both constraints admit the same treatment,
+and both lead to the same conclusion regarding placement.
+
+\textbf{Latency.} Fig.~\ref{fig:latency}(a) decomposes the end-to-end time of the four-agent
+workflow. Generation accounts for $81$\,s at $b=64$; the eleven hand-offs traversing three network
+hops contribute between $66$\,ms on metro fibre and $825$\,ms on a loaded edge cell, that is
+between $0.08\%$ and $1.02\%$ of the total. Distributing the agents is consequently no more a
+latency decision than an energy one, and for the same reason: the quantity that dominates is
+generation, which placement does not alter.
+
+The trade that does exist is the serving batch, and it is unfavourable in a manner that matters
+for network control. Energy per session falls $10.8\times$ between $b=1$ and $b=512$, from $12.2$
+to $1.13$\,kJ, while end-to-end latency rises $10.7\times$, from $37$ to $396$\,s
+(Fig.~\ref{fig:latency}b). The efficiency of agentic serving is thus obtained by queueing, and a
+loop operating under a latency budget forgoes it. Fig.~\ref{fig:latency}(c) makes the consequence
+explicit: no configuration of this workflow completes within one second at any depth, and only the
+unbatched configuration completes within one minute beyond $K=4$. Agentic reasoning of the form
+considered here is therefore suited to supervisory and planning timescales rather than to
+closed-loop control, independently of where its agents are placed.
+
+\textbf{Site dimensioning.} Table~\ref{tab:dimensioning} expresses the same workflow in the units
+an operator provisions. One accelerator serving at $b=64$ completes $0.79$ sessions per second,
+and each session emits a fixed hand-off volume, so the offered load per accelerator follows
+directly. Under any text-carrying protocol a $10$\,GbE uplink supports between $3.8\times10^{4}$
+and $2.5\times10^{5}$ accelerators before hand-offs saturate it, a density no site approaches;
+compute is the binding resource by four to five orders of magnitude. The ordering inverts only for
+cache migration, where a single accelerator saturates the same link. Provisioning an agentic edge
+site is accordingly a compute-capacity problem, and becomes a transport problem only if cache
+state is moved rather than reconstructed.\OLD{}
 
 % ===========================================================================
 \section{Discussion and Limitations}\label{sec:discussion}

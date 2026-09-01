@@ -27,7 +27,8 @@ from typing import List, Optional
 __all__ = [
     "Hardware", "LLM", "Tool", "Retrieval", "Step", "Workflow",
     "HW", "LLMS", "MFU_LATENCY", "MFU_THROUGHPUT", "BITS_PER_TOKEN", "GWH_TO_J",
-    "prefill_rate", "decode_rate", "llm_call_energy", "joules_per_token",
+    "prefill_rate", "decode_rate", "llm_call_energy", "call_latency",
+    "joules_per_token",
     "embedding_flops", "validate_two_rate", "TwoRateCalib", "TWO_RATE",
     "four_agent_rag_workflow", "tree_workflow", "debate_workflow",
     "validate_against_samsi", "validate_current_gen",
@@ -188,6 +189,23 @@ def decode_rate(model: LLM, hw: Hardware, batch: float = 1.0, context: float = 0
     weights = model.n_active * model.bytes_per_param / max(float(batch), 1.0)
     cache = model.kv_bytes_per_token * context
     return hw.power * (weights + cache) / (hw.bandwidth * hw.bw_efficiency)
+
+
+def call_latency(model: LLM, hw: Hardware, p_in: float, p_out: float,
+                 batch: float = 1.0) -> float:
+    """Wall-clock time of one call [s], which is not energy divided by power.
+
+    Energy per request divides by the serving batch, because the weight read of a decode step is
+    shared by every sequence in flight. Latency does not: the step occupies its full duration for
+    all of them. Prefill is one compute-bound pass; each decode step costs the weight read plus
+    the cache read of the whole batch.
+    """
+    b = max(float(batch), 1.0)
+    cbar = p_in + p_out / 2.0
+    t_pre = 2.0 * model.n_active * p_in / (hw.eta_pre * hw.flops_peak)
+    step = (model.n_active * model.bytes_per_param
+            + b * model.kv_bytes_per_token * cbar) / (hw.bandwidth * hw.bw_efficiency)
+    return t_pre + p_out * step
 
 
 def llm_call_energy(model: LLM, hw: Hardware, p_in: float, p_out: float,
@@ -351,7 +369,8 @@ class Workflow:
         transcript = []      # (round index, agent, tokens) for outputs and tool observations
         e_llm = e_tool = e_ret = e_tx = 0.0
         e_prefill = e_decode = 0.0   # the two terms of Eq. (3)
-        t_llm = 0.0          # serial compute time of the LLM calls [s]
+        t_llm = 0.0          # request's share of device time [s]
+        t_wall = 0.0         # wall-clock time of the calls, run back to back [s]
         useful_out = 0
         prefill_tokens = decode_tokens = 0
         prev_agent = None
@@ -387,6 +406,8 @@ class Workflow:
             e_call = pre + dec
             e_llm += e_call
             t_llm += e_call / self.hw.power
+            t_wall += call_latency(self.model, self.hw, p_in, st.p_out,
+                                   self.serving_batch)
             prefill_tokens += p_in
             decode_tokens += st.p_out
             useful_out += st.p_out
@@ -410,6 +431,7 @@ class Workflow:
             "e_prefill": e_prefill,
             "e_decode": e_decode,
             "t_llm": t_llm,
+            "t_wall": t_wall,
             "e_tool": e_tool,
             "e_retrieval": e_ret,
             "e_transmission": e_tx,

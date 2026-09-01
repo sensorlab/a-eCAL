@@ -37,3 +37,9 @@ main_network_simulation.pdf
 # Jupyter and run-marker artifacts inside the results directory
 .ipynb_checkpoints/
 *.done
+
+# build products of the side note
+v1/*.pdf
+v1/*.aux
+v1/*.log
+v1/*.out
