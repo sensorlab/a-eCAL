@@ -43,3 +43,6 @@ v1/*.pdf
 v1/*.aux
 v1/*.log
 v1/*.out
+
+# Generated Overleaf upload bundle
+agentic-ecal-overleaf.zip

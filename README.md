@@ -36,25 +36,51 @@ sender and receiver are charged.
 
 ```
 scripts/clean/
-  agentic_ecal.py   the model: Hardware/LLM descriptors, two-rate call model, Workflow, the metric
-  osi.py            eCAL Eq. (3), the OSI-layer transmission model, for E_tx
-  placement.py      bearers, deployment archetypes, and the generated placement table
-  make_figures.py   regenerates every figure and prints the numbers quoted in the paper
-  results/          the measured sweeps (A100, vLLM): agent count, reasoning depth, serving batch
-main.tex, refs.bib  the paper
+  agentic_ecal.py             the model: Hardware/LLM descriptors, two-rate call model, Workflow, the metric
+  osi.py                      eCAL Eq. (3), the OSI-layer transmission model, for E_tx
+  placement.py                bearers, deployment archetypes, and the generated placement table
+  make_figures.py             the shared figures + tab_dimensioning
+  model_placement.py          device tiers with MEMORY, 16-model fleet geometry, the measured peer law
+  fit_peer_law.py             fits the peer law from ~/DATA/data_steiner_Aug26 (see below)
+  make_figures_placement.py   fig_model_placement + tab_model_placement          (v2 only)
+  make_figure_workflow.py     fig_workflow, the case-study schematic              (v2 only)
+  make_figure_infra.py        fig_infra + tab_infra + infra_macros                (v2 only, needs runs)
+  results/                    the measured sweeps (A100, vLLM), plus the cached Steiner aggregate
+main.tex            the frozen manuscript -- do not edit
+v1/, v2/            successive revisions; v2 is the working copy
 figures/, tables/   generated artifacts, committed so the paper builds without running the model
 ```
+
+`main.tex` and `v1/` are frozen. All current work happens in `v2/`, with changes marked
+`\ROOF{}` (green) and text flagged for removal marked `\CUT{}` (red). Note that a colour set
+inside a group does **not** survive a column break in this two-column layout, so coloured
+paragraphs re-assert the marker at each paragraph or clause boundary.
 
 ## Reproduce
 
 ```bash
 pip install -r requirements.txt
 cd scripts/clean
-python3 agentic_ecal.py     # derived-vs-measured coefficients, and the reduction to eCAL at K=1
-python3 placement.py        # regenerates tables/tab_placement.tex
-python3 make_figures.py     # regenerates all figures from results/
-cd ../.. && latexmk -pdf main.tex
+python3 agentic_ecal.py              # derived-vs-measured coefficients, reduction to eCAL at K=1
+python3 placement.py                 # tables/tab_placement.tex  (generated but currently unused)
+python3 make_figures.py              # the shared figures + tab_dimensioning
+python3 make_figures_placement.py    # fig_model_placement + tab_model_placement
+python3 make_figure_workflow.py      # fig_workflow
+cd ../v2 && latexmk -pdf main.tex
 ```
+
+`make_figures_placement.py` reads the cached aggregate
+`scripts/clean/results/steiner_tokens_by_cell.csv`, which is committed, so it runs without the
+raw data. To rebuild that aggregate from scratch you need `~/DATA/data_steiner_Aug26` (132 GB,
+not in the repo) and `python3 fit_peer_law.py`; it summarises the `teams_*.csv` files in chunks,
+which are ~20x smaller than the `agents_*.csv` ones.
+
+`make_figure_infra.py` waits on the infrastructure-benchmark runs. It expects
+`scripts/clean/results/infra_runs.csv` with columns `topology, n_proposers, run_id, task_id,
+difficulty, success, prefill_tokens, decode_tokens, wall_s`, and exits with that message if the
+file is absent. Until then `tables/infra_macros.tex`, `tables/tab_infra.tex` and
+`figures/fig_infra.pdf` are committed placeholders that render a conspicuous red `??` or
+"pending benchmark runs", so no placeholder can ship unnoticed.
 
 `agentic_ecal.py` is stdlib-only. `make_figures.py` and `placement.py` need numpy, pandas and
 matplotlib, and the measured CSVs in `scripts/clean/results/`.
