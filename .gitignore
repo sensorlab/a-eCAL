@@ -38,11 +38,9 @@ main_network_simulation.pdf
 .ipynb_checkpoints/
 *.done
 
-# build products of the side note
-v1/*.pdf
-v1/*.aux
-v1/*.log
-v1/*.out
+# Manuscript working copies. The LaTeX sources are maintained outside this repo;
+# v1/, v2/, v3/ ... are local checkouts of them and must never be tracked here.
+v[0-9]*/
 
 # Generated Overleaf upload bundle
 agentic-ecal-overleaf.zip
