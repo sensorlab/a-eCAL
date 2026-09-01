@@ -1,6 +1,6 @@
 # a-eCAL — Agentic-eCAL
 
-Analytical model and paper source for **agentic-eCAL**, extending the
+Analytical model for **agentic-eCAL**, extending the
 [eCAL](https://github.com/sensorlab/eCAL) methodology (Chou et al., IEEE JSAC 2026) from a single
 AI-model lifecycle to **agentic workflows on open-weight LLMs**: a graph of LLM calls, tool
 invocations, retrievals and inter-agent messages, measured in joules per useful bit.
@@ -42,19 +42,15 @@ scripts/clean/
   make_figures.py             the shared figures + tab_dimensioning
   model_placement.py          device tiers with MEMORY, 16-model fleet geometry, the measured peer law
   fit_peer_law.py             fits the peer law from ~/DATA/data_steiner_Aug26 (see below)
-  make_figures_placement.py   fig_model_placement + tab_model_placement          (v2 only)
-  make_figure_workflow.py     fig_workflow, the case-study schematic              (v2 only)
-  make_figure_infra.py        fig_infra + tab_infra + infra_macros                (v2 only, needs runs)
+  make_figures_placement.py   fig_model_placement + tab_model_placement
+  make_figure_workflow.py     fig_workflow, the case-study schematic
+  make_figure_infra.py        fig_infra + tab_infra + infra_macros                (needs benchmark runs)
   results/                    the measured sweeps (A100, vLLM), plus the cached Steiner aggregate
-main.tex            the frozen manuscript -- do not edit
-v1/, v2/            successive revisions; v2 is the working copy
-figures/, tables/   generated artifacts, committed so the paper builds without running the model
 ```
 
-`main.tex` and `v1/` are frozen. All current work happens in `v2/`, with changes marked
-`\ROOF{}` (green) and text flagged for removal marked `\CUT{}` (red). Note that a colour set
-inside a group does **not** survive a column break in this two-column layout, so coloured
-paragraphs re-assert the marker at each paragraph or clause boundary.
+The manuscript no longer lives here. This repository holds the model, the measured data, and the
+scripts that generate the paper's figures and tables; the LaTeX sources are maintained separately.
+Running the scripts recreates `figures/` and `tables/` from `scripts/clean/results/`.
 
 ## Reproduce
 
@@ -66,8 +62,9 @@ python3 placement.py                 # tables/tab_placement.tex  (generated but 
 python3 make_figures.py              # the shared figures + tab_dimensioning
 python3 make_figures_placement.py    # fig_model_placement + tab_model_placement
 python3 make_figure_workflow.py      # fig_workflow
-cd ../v2 && latexmk -pdf main.tex
 ```
+
+The scripts write into `figures/` and `tables/` at the repository root, creating them if absent.
 
 `make_figures_placement.py` reads the cached aggregate
 `scripts/clean/results/steiner_tokens_by_cell.csv`, which is committed, so it runs without the
@@ -78,9 +75,11 @@ which are ~20x smaller than the `agents_*.csv` ones.
 `make_figure_infra.py` waits on the infrastructure-benchmark runs. It expects
 `scripts/clean/results/infra_runs.csv` with columns `topology, n_proposers, run_id, task_id,
 difficulty, success, prefill_tokens, decode_tokens, wall_s`, and exits with that message if the
-file is absent. Until then `tables/infra_macros.tex`, `tables/tab_infra.tex` and
-`figures/fig_infra.pdf` are committed placeholders that render a conspicuous red `??` or
+file is absent. Until then it emits placeholders that render a conspicuous red `??` or
 "pending benchmark runs", so no placeholder can ship unnoticed.
+
+`scripts/clean/results/infranet.png` is the infrastructure-benchmark result figure that motivates
+that section.
 
 `agentic_ecal.py` is stdlib-only. `make_figures.py` and `placement.py` need numpy, pandas and
 matplotlib, and the measured CSVs in `scripts/clean/results/`.
