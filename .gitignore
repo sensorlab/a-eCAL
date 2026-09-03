@@ -44,3 +44,10 @@ v[0-9]*/
 
 # Generated Overleaf upload bundle
 agentic-ecal-overleaf.zip
+
+# The orchestration-architecture manuscript is an anonymised submission whose distribution
+# and citation are restricted; it is read locally and must never be committed.
+Topologies_AAAI*.pdf
+
+# Infra-Bench lives in its own repository; this is a local working copy, not a vendored dependency.
+agent-infra/

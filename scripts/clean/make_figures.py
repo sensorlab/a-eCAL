@@ -561,81 +561,70 @@ def _protocol_messages(kind, n_agents=COMM_N, rounds=COMM_K, p_out=COMM_POUT):
     return out
 
 
-def _protocol_bits(kind, model):
+def _protocol_bits(kind, model, rounds=COMM_K):
     """Bits a hand-off puts on the wire; the cache is bytes, not tokens."""
     if kind == "KV migration":
-        ctx = COMM_N * COMM_K * COMM_POUT / 2.0
-        return [model.kv_bytes_per_token * ctx * 8.0] * (COMM_N * COMM_K)
-    return [ae.BITS_PER_TOKEN * t for t in _protocol_messages(kind)]
+        ctx = COMM_N * rounds * COMM_POUT / 2.0
+        return [model.kv_bytes_per_token * ctx * 8.0] * (COMM_N * rounds)
+    return [ae.BITS_PER_TOKEN * t for t in _protocol_messages(kind, rounds=rounds)]
 
 
 def fig_comm(out_dir):
-    """Communication-efficient distributed reasoning: what the hand-off protocol costs.
+    """What a hand-off must contain, how that grows with depth, and when it would ever matter.
 
-    The four protocols carry the same conversation between the same agents over the same links.
-    What differs is what each hand-off must contain, and that choice spans five orders of
-    magnitude in traffic, energy and added latency.
+    The three panels answer three questions. An earlier version plotted volume, energy and
+    latency, but energy is volume times a bearer constant (log-log correlation 1.0000) and latency
+    is propagation-dominated, so two of the three panels carried no information the first did not.
     """
-    hw, calib, batch = CASE_HW, CASE_CALIB, CASE_BATCH
     model = ae.LLMS["llama3_8b"]
-    e_w = dataclasses.replace(ae.four_agent_rag_workflow(hw=hw, rounds=COMM_K),
-                              serving_batch=batch, calib=calib).run()["e_total"]
+    KS = [1, 2, 3, 4, 5, 6]
     fig, ax = plt.subplots(1, 3, figsize=(7.1, 2.4))
-    xs = np.arange(len(PROTOCOLS))
 
-    # (a) traffic the protocol puts on the wire
+    # (a) what one session puts on the wire
+    xs = np.arange(len(PROTOCOLS))
     vols = [sum(_protocol_bits(k, model)) / 1e6 for k, _ in PROTOCOLS]
     ax[0].bar(xs, vols, 0.6, color=[c for _, c in PROTOCOLS])
     for x, v in zip(xs, vols):
-        ax[0].annotate(f"{v:,.3g}", xy=(x, v * 1.6), ha="center", fontsize=5)
+        ax[0].annotate(f"{v:,.3g}", xy=(x, v * 1.7), ha="center", fontsize=5)
     ax[0].set_yscale("log"); ax[0].set_ylim(1e-2, 1e6)
-    ax[0].set_xticks(xs); ax[0].set_xticklabels([k for k, _ in PROTOCOLS], fontsize=5.5,
-                                                rotation=20, ha="right")
+    ax[0].set_xticks(xs)
+    ax[0].set_xticklabels([k for k, _ in PROTOCOLS], fontsize=5.5, rotation=20, ha="right")
     ax[0].set_ylabel("traffic per session (Mbit)")
-    ax[0].set_title("(a) what a hand-off carries")
-    ax[0].tick_params(labelsize=6)
+    ax[0].set_title(f"(a) what a hand-off carries, $K={COMM_K}$", fontsize=8)
 
-    # (b) the energy that traffic costs, as a share of the compute it accompanies
-    width = 0.2
-    for j, (kind, col) in enumerate(PROTOCOLS):
-        bits = _protocol_bits(kind, model)
-        vals = [100 * sum(osi.segment_energy(x, pl.BEARERS[b].eps)
-                          + osi.endpoint_stack_energy(x) for x in bits) / e_w
-                for b in COMM_BEARERS]
-        ax[1].bar(np.arange(len(COMM_BEARERS)) + (j - 1.5) * width, vals, width,
-                  color=col, label=kind)
-        print(f"  [{kind:<13}] traffic {sum(bits)/1e6:9.3f} Mb | "
-              + ", ".join(f"{pl.BEARERS[b].name.split()[0]} {v:.3g}%"
-                          for b, v in zip(COMM_BEARERS, vals)))
-    ax[1].axhline(100, color="k", lw=0.7, ls=":")
-    ax[1].set_yscale("log"); ax[1].set_xticks(np.arange(len(COMM_BEARERS)))
-    ax[1].set_xticklabels([pl.BEARERS[b].name.replace(" / copper access", "")
-                           for b in COMM_BEARERS], fontsize=5, rotation=20, ha="right")
-    ax[1].set_ylabel("$E_{\\rm tx}$ (% of $E_W$)")
-    ax[1].set_title("(b) cost against the compute")
-    ax[1].legend(frameon=False, fontsize=4.5, ncol=2); ax[1].tick_params(labelsize=6)
+    # (b) how that volume grows with loop depth: quadratic for full context, linear otherwise
+    for kind, col in PROTOCOLS:
+        v = [sum(_protocol_bits(kind, model, rounds=K)) / 1e6 for K in KS]
+        ax[1].plot(KS, v, "-o", color=col, ms=3, lw=1.3, label=kind)
+        print(f"  [{kind:<13}] K=1..6 volume {v[0]:.3g} -> {v[-1]:.3g} Mbit "
+              f"({v[-1]/v[0]:.1f}x)")
+    ax[1].set_yscale("log"); ax[1].set_xlabel("loop depth $K$")
+    ax[1].set_ylabel("traffic per session (Mbit)")
+    ax[1].set_title("(b) growth with depth", fontsize=8)
+    ax[1].legend(frameon=False, fontsize=4.6)
+    ax[1].annotate("re-shipping context\ngrows quadratically", xy=(5, 1.2),
+                   fontsize=4.8, color="0.35", ha="center")
 
-    # (c) added latency. The three text protocols coincide: latency is set by the propagation
-    # floor of len(bits) messages, which every protocol shares, not by payload size.
-    for (kind, col), mk in zip(PROTOCOLS, ("o", "s", "^", "D")):
-        bits = _protocol_bits(kind, model)
-        lat = [1e3 * (osi.cascade_bits(sum(bits)) / pl.BEARERS[b].rate
-                      + len(bits) * pl.BEARERS[b].latency) for b in COMM_BEARERS]
-        ax[2].semilogy(np.arange(len(COMM_BEARERS)), lat, marker=mk, ls="-", color=col,
-                       ms=3.2, lw=1.2, mfc="none", mew=0.9, label=kind)
-        print(f"  [{kind:<13}] added latency {lat[0]:,.0f}-{lat[-1]:,.0f} ms across the links")
-    ax[2].set_xticks(np.arange(len(COMM_BEARERS)))
-    ax[2].set_xticklabels([pl.BEARERS[b].name.replace(" / copper access", "")
-                           for b in COMM_BEARERS], fontsize=5, rotation=20, ha="right")
-    ax[2].text(0.5, 0.40, "text protocols coincide within $11\\%$:\n"
-               "latency is set by the $11$ propagation delays, not payload",
-               transform=ax[2].transAxes, fontsize=4.2, color="0.35", ha="center")
-    ax[2].set_ylabel("added latency (ms)")
-    ax[2].set_title("(c) added latency per session")
-    ax[2].legend(frameon=False, fontsize=4.5); ax[2].tick_params(labelsize=6)
+    # (c) the bearer intensity at which transmission would equal the compute it accompanies
+    for kind, col in PROTOCOLS:
+        eps = []
+        for K in KS:
+            wf = dataclasses.replace(ae.four_agent_rag_workflow(hw=CASE_HW, rounds=K),
+                                     serving_batch=CASE_BATCH, calib=CASE_CALIB)
+            eps.append(wf.run()["e_total"] / sum(_protocol_bits(kind, model, rounds=K)))
+        ax[2].plot(KS, eps, "-o", color=col, ms=3, lw=1.3)
+        print(f"  [{kind:<13}] parity eps* {eps[0]:.2e} -> {eps[-1]:.2e} J/b")
+    for e, name in ((1e-8, "backbone"), (1e-6, "5G"), (1e-3, "NB-IoT")):
+        ax[2].axhline(e, color="0.6", lw=0.7, ls=":")
+        ax[2].text(6.05, e, name, fontsize=4.6, color="0.45", va="center")
+    ax[2].set_yscale("log"); ax[2].set_xlabel("loop depth $K$")
+    ax[2].set_ylabel("parity $\\varepsilon^\\star$ (J/b)")
+    ax[2].set_title("(c) when would it matter?", fontsize=8)
+    ax[2].set_xlim(0.7, 7.6)
 
+    for a in ax:
+        a.tick_params(labelsize=6); a.grid(alpha=0.25, lw=0.4)
     _save(fig, out_dir, "fig_comm.pdf")
-
 
 
 LAT_BATCHES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
