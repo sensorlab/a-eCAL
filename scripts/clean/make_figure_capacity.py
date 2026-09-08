@@ -72,14 +72,20 @@ FLEET = mp.FLEET
 
 
 def grids():
-    """Two matrices over (tier, weight bin): models that load, and agents they then hold."""
+    """Matrices over (tier, weight bin): models that load, agents they hold, and class size.
+
+    The class populations are the denominator panel (a) needs. They are 3, 7, 3, 3 -- not equal --
+    so a raw count of 3 and a raw count of 7 can both mean "every model in the class".
+    """
     fits = np.zeros((len(TIERS), len(BINS)))
     agents = np.full((len(TIERS), len(BINS)), np.nan)
+    pops = np.zeros(len(BINS))
     for i, tk in enumerate(TIERS):
         dev = mp.DEVICES[tk]
         for j, (lo, hi, _) in enumerate(BINS):
             inbin = [k for k, m in FLEET.items()
                      if lo <= mp.weight_bytes(m) / mp.GB < hi]
+            pops[j] = len(inbin)
             ok = [k for k in inbin if mp.weight_bytes(FLEET[k]) <= dev.usable]
             fits[i, j] = len(ok)
             if ok:
@@ -89,13 +95,21 @@ def grids():
                 caps = [c for c in caps if c > 0]
                 if caps:
                     agents[i, j] = float(np.median(caps))
-    return fits, agents
+    return fits, agents, pops
 
 
-def heat(ax, M, title, cbar_label, fmt, log=False, cmap="viridis", annot=True):
-    """pcolormesh rather than imshow: imshow resamples in vector output and stripes the cells."""
-    D = np.ma.masked_invalid(M)
-    norm = matplotlib.colors.LogNorm(vmin=max(np.nanmin(M), 1), vmax=np.nanmax(M)) if log else None
+def heat(ax, M, title, cbar_label, fmt, log=False, cmap="viridis", annot=True, denoms=None):
+    """pcolormesh rather than imshow: imshow resamples in vector output and stripes the cells.
+
+    ``denoms`` gives the per-column population. Supplied, cells are coloured by the FRACTION n/N
+    and labelled "n/N" rather than by the raw count. Colouring counts on a shared scale made the
+    3-model classes render permanently fainter than the 7-model one even where both were fully
+    satisfied, which reads as though fewer light models fit than medium ones -- the opposite of
+    the truth. With a fraction the four columns are directly comparable.
+    """
+    C = M if denoms is None else M / np.asarray(denoms, float)[None, :]
+    D = np.ma.masked_invalid(C)
+    norm = matplotlib.colors.LogNorm(vmin=max(np.nanmin(C), 1), vmax=np.nanmax(C)) if log else None
     ny, nx = M.shape
     mesh = ax.pcolormesh(np.arange(nx + 1), np.arange(ny + 1), D, cmap=cmap, norm=norm,
                          shading="flat", edgecolors="white", linewidth=0.4)
@@ -107,20 +121,26 @@ def heat(ax, M, title, cbar_label, fmt, log=False, cmap="viridis", annot=True):
     ax.set_xlabel("model weight [GB]", fontsize=7)
     ax.set_title(title, fontsize=8)
     if annot:
-        hi = np.nanmax(M)
+        hi = np.nanmax(C)
         for i in range(ny):
             for j in range(nx):
-                v = M[i, j]
-                if np.isnan(v) or v == 0:
+                v, c = M[i, j], C[i, j]
+                # With a denominator, 0 is informative ("0/7"), so only NaN is blank.
+                if np.isnan(v) or (v == 0 and denoms is None):
                     ax.text(j + .5, i + .5, "--", ha="center", va="center",
                             fontsize=6, color="0.45")
                 else:
-                    frac = (np.log10(max(v, 1)) / np.log10(hi)) if log else (v / hi)
-                    ax.text(j + .5, i + .5, fmt(v), ha="center", va="center", fontsize=5.8,
-                            color="white" if frac < 0.55 else "black")
+                    shade = (np.log10(max(c, 1)) / np.log10(hi)) if log else (c / hi)
+                    label = f"{v:.0f}/{denoms[j]:.0f}" if denoms is not None else fmt(v)
+                    ax.text(j + .5, i + .5, label, ha="center", va="center", fontsize=5.8,
+                            color="white" if shade < 0.55 else "black")
     cb = plt.colorbar(mesh, ax=ax, fraction=0.046, pad=0.03)
     cb.set_label(cbar_label, fontsize=6)
-    cb.ax.tick_params(labelsize=5.5)
+    # tick_params defaults to which="major", so under LogNorm the minor labels (2x10^0, 3x10^0, ...)
+    # kept the default font size and overprinted each other. Label decades only.
+    cb.ax.tick_params(labelsize=5.5, which="both")
+    if log:
+        cb.ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
 
 
 def tx_energy(edges, transport):
@@ -131,9 +151,10 @@ def tx_energy(edges, transport):
 
 
 def main(out_dir=OUT_DEFAULT):
-    fits, agents = grids()
+    fits, agents, pops = grids()
     fig, ax = plt.subplots(1, 3, figsize=(7.2, 2.6))
-    heat(ax[0], fits, "(a) models that load", f"models (of {len(FLEET)})", lambda v: f"{v:.0f}")
+    heat(ax[0], fits, "(a) models that load", "fraction of weight class",
+         lambda v: f"{v:.0f}", denoms=pops)
     heat(ax[1], agents, f"(b) concurrent $N={TEAM}$ sessions", "sessions",
          lambda v: f"{v:,.0f}", log=True, cmap="magma")
     for i, t in enumerate(ARCH):
@@ -163,11 +184,14 @@ def main(out_dir=OUT_DEFAULT):
     fig.savefig(p, bbox_inches="tight"); plt.close(fig)
     print("wrote", p)
     print("\n(a) models that load / (b) median agents hosted")
-    print(f"{'tier':<18}" + "".join(f"{b[2]:>12}" for b in BINS))
+    print(f"{'tier':<22}" + "".join(f"{b[2] + f' (n/{int(pops[j])})':>14}"
+                                      for j, b in enumerate(BINS)))
     for i, t in enumerate(TIERS):
-        row = "".join(f"{int(fits[i,j])}/{'--' if np.isnan(agents[i,j]) else round(agents[i,j]):>7}"
-                      .rjust(12) for j in range(len(BINS)))
-        print(f"{mp.DEVICES[t].name:<18}{row}")
+        row = ""
+        for j in range(len(BINS)):
+            sess = "--" if np.isnan(agents[i, j]) else f"{round(agents[i,j])}"
+            row += f"{int(fits[i,j])}/{int(pops[j])}  {sess}".rjust(14)
+        print(f"{mp.DEVICES[t].name:<22}{row}")
 
 
 if __name__ == "__main__":

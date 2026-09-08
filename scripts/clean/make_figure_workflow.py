@@ -38,9 +38,16 @@ CALIB = ae.TWO_RATE["llama3_8b"]     # the case study's model, measured coeffici
 # b=1 lies below the fitted range b in [2,256]; Eq. (5) is derived rather than fitted, so
 # extrapolating is principled, but the caption says so.
 REGIMES = [(1, "$b=1$", "0.62"), (64, "$b=64$", "C0"), (256, "$b=256$", "C2")]
-# every bearer of Table III except the NB-IoT uplink, which the manuscript excludes
-BEARERS = ("metro", "ftth", "5g", "edgecell")
-SHORT_BEARER = {"metro": "metro", "ftth": "FTTH", "5g": "5G", "edgecell": "edge cell"}
+# Every bearer of Table III except the NB-IoT uplink, which the manuscript excludes. Note
+# "backbone" rather than "metro": placement.BEARERS carries a "metro" at 1e-8 that duplicates
+# backbone and has no Table III grounding -- Table III's Metro / fixed is the 1e-7 row, which is
+# the "ftth" key. Reaching for "metro" here therefore labelled the backbone intensity "metro".
+# The four epsilons were already Table III's four non-NB-IoT rows, so no plotted value changes;
+# only the names were wrong. The two fibre rows are spelled out because that is where the
+# ambiguity was; the radio rows keep their short forms, which are unambiguous as they stand.
+BEARERS = ("backbone", "ftth", "5g", "edgecell")
+TABLE3_NAME = {"backbone": "Optical backbone", "ftth": "Metro / fixed",
+               "5g": "5G", "edgecell": "edge cell"}
 
 
 def decompose(wf: ae.Workflow):
@@ -118,7 +125,7 @@ def transmission_panel(ax, wf):
         for t in toks:
             bits = ae.BITS_PER_TOKEN * t
             e += osi.segment_energy(bits, b.eps, b.failure_rate) + osi.endpoint_stack_energy(bits)
-        names.append(SHORT_BEARER[key]); vals.append(e)
+        names.append(TABLE3_NAME[key]); vals.append(e)
     ax.bar(range(len(vals)), vals, 0.6, color="C2")
     # b=64 and b=256 differ by only 18%, so their reference lines would overprint; bracket
     # the range with the single-stream extreme and the production operating point instead.
@@ -240,7 +247,7 @@ def main():
         b = pl.BEARERS[key]
         e = sum(osi.segment_energy(ae.BITS_PER_TOKEN * t, b.eps, b.failure_rate)
                 + osi.endpoint_stack_energy(ae.BITS_PER_TOKEN * t) for t in toks)
-        print(f"    {b.name:<22} E_tx={e:.4f} J  "
+        print(f"    {TABLE3_NAME[key]:<22} E_tx={e:.4f} J  "
               f"({100*e/workflow_energy(64)[0]:.4f}% of E_W at b=64)")
 
 

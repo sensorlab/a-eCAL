@@ -485,8 +485,19 @@ def four_agent_rag_workflow(model: Optional[LLM] = None, hw: Optional[Hardware] 
     ] * max(int(rounds), 1)
     # round_size stays 1: the four agents run in sequence, so each reads its predecessors'
     # output within the same pass. Grouping them into one parallel round would remove that.
+    #
+    # tx_energy_per_message = 0: this is the CENTRALIZED case study, four co-located agents, and
+    # the co-located column of the placement table is zero by construction. It was 0.5 J, a flat
+    # per-message constant, which is the wrong shape as well as the wrong value: osi.segment_energy
+    # and osi.endpoint_stack_energy are exactly linear in payload with zero intercept, so there is
+    # no fixed per-message cost for a constant to represent, and the three hand-offs here differ
+    # 3.85x in size (200/320/770 tokens). The value was also bearer-independent, where the correct
+    # figure spans 0.003 J (metro) to 17 J (NB-IoT) per message. Distribution is priced ON TOP of
+    # E_W by placement.py/osi.py -- which is what fig_workflow(d) and the placement section do --
+    # so carrying a second, flat transmission model inside E_W double-counted the same hand-offs
+    # by a different method. debate_workflow already sets 0.0.
     return Workflow(model=model or LLMS["llama3_8b"], hw=hw or HW["a100"], steps=steps,
-                    carry_history=True, gamma_v=0.10, tx_energy_per_message=0.5)
+                    carry_history=True, gamma_v=0.10, tx_energy_per_message=0.0)
 
 
 def tree_workflow(model: LLM, hw: Hardware, fanout: int, depth: int,
