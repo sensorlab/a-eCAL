@@ -46,3 +46,5 @@ v1/*.out
 
 # Generated Overleaf upload bundle
 agentic-ecal-overleaf.zip
+experimental_results/*
+experiments_qwen3_8_27B/*
