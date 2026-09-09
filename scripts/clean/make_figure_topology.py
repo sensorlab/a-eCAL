@@ -22,7 +22,7 @@ Writes figures/fig_topology.pdf (default: ../../v2/figures).
 """
 from __future__ import annotations
 
-import math, os, sys
+import math, os, re, sys
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -34,8 +34,16 @@ import placement as pl
 import osi
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT_DEFAULT = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, "v2", "figures"))
 
+def _paper_figures(default="figures"):
+    """Newest vN/figures alongside the repo, or repo-root figures/ if none exists."""
+    root = os.path.dirname(os.path.dirname(HERE))
+    vs = sorted((d for d in os.listdir(root)
+                 if re.fullmatch(r"v\d+", d) and os.path.isdir(os.path.join(root, d))),
+                key=lambda d: int(d[1:]))
+    return os.path.join(root, vs[-1] if vs else "", default)
+
+OUT_DEFAULT = _paper_figures()
 N, ROUNDS = 30, 2
 CALIB = ae.TWO_RATE["qwen2_5_7b"]
 

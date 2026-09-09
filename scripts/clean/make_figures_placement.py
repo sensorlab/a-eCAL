@@ -15,6 +15,7 @@ only; task accuracy is not analysed.
 from __future__ import annotations
 
 import os
+import re
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -26,10 +27,19 @@ import osi
 import model_placement as mp
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+def _paper_figures(default="figures"):
+    """Newest vN/figures alongside the repo, or repo-root figures/ if none exists."""
+    root = os.path.dirname(os.path.dirname(HERE))
+    vs = sorted((d for d in os.listdir(root)
+                 if re.fullmatch(r"v\d+", d) and os.path.isdir(os.path.join(root, d))),
+                key=lambda d: int(d[1:]))
+    return os.path.join(root, vs[-1] if vs else "", default)
+
 ROOT = os.path.dirname(os.path.dirname(HERE))
 RESULTS = os.path.join(HERE, "results", "steiner_tokens_by_cell.csv")
-FIGDIR = os.path.join(ROOT, "figures")
-TABDIR = os.path.join(ROOT, "tables")
+FIGDIR = _paper_figures()
+TABDIR = _paper_figures("tables")
 
 CASE = "qwen2.5-7b"          # the model the manuscript already uses
 CASE_KEY = "qwen2_5_7b"

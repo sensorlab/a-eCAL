@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Generate the agentic-eCAL figures from the single-rate model in ``agentic_ecal.py``.
 
-Five figures: fig_scaling, fig_validation, fig_tokens (measured), fig_components and
+Figures for the manuscript: fig_validation and fig_scaling (measured), fig_workflow's
+companion fig_comm, and fig_amortization. fig_tokens and fig_components are retained because
+they are still generated on request, but no current section includes them; check before citing
 fig_amortization (model only). The measured ones need the CSVs; point --data at them or set
 AGENTIC_ECAL_DATA, otherwise they are skipped with a message rather than an error.
 """
@@ -11,6 +13,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import os
+import re
 import sys
 
 import numpy as np
@@ -18,6 +21,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
+from matplotlib.legend_handler import HandlerTuple
 from matplotlib.lines import Line2D
 from matplotlib.ticker import LogLocator, NullFormatter, ScalarFormatter
 
@@ -28,8 +32,18 @@ import osi  # noqa: E402
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# The repo-root figures/ that main.tex includes, so a bare run updates the paper's figures.
-OUT_DEFAULT = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, "figures"))
+
+def _paper_figures(default="figures"):
+    """Newest vN/figures alongside the repo, or repo-root figures/ if none exists."""
+    root = os.path.dirname(os.path.dirname(HERE))
+    vs = sorted((d for d in os.listdir(root)
+                 if re.fullmatch(r"v\d+", d) and os.path.isdir(os.path.join(root, d))),
+                key=lambda d: int(d[1:]))
+    return os.path.join(root, vs[-1] if vs else "", default)
+
+# The manuscript is maintained outside this repository, in a vN/ working copy; write into the
+# highest-numbered one that exists so the default does not go stale each time it is superseded.
+OUT_DEFAULT = _paper_figures()
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -43,13 +57,13 @@ OUT_DEFAULT = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, "figures
 HW_OVERLAY = ae.HW["a100"]
 BOARD_POWER_MEAS = 296.0   # W, median draw derived from the measurements themselves
 
-# The case study is stated on H100 at eta = 0.05 in Section IV; fig_components and
+# The case study's operating point is stated in the results section; fig_components and
 # fig_amortization share it, so the component split and the amortization floor describe one regime.
 # The model-only figures price calls with the SAME measured coefficients as fig_validation, so
 # every model estimate in the paper rests on one calibration. Those coefficients were measured on
 # the A100, so the case study is an A100 case study.
 CASE_HW = ae.HW["a100"]
-CASE_BATCH = 64            # b in Eq. (3)
+CASE_BATCH = 64            # b of the decode rate
 CASE_CALIB = ae.TWO_RATE["llama3_8b"]
 ETAS = (0.25, 0.30, 0.60, 0.70)
 ETA_GREYS = ("0.80", "0.62", "0.40", "0.10")   # light -> dark with increasing eta
@@ -126,7 +140,7 @@ def _loglog_slope(x, y):
 # ---------------------------------------------------------------------------
 
 def two_rate_energy_per_query(key, p_in_total, p_out_total, n_calls, batch):
-    """Paper Eq. (3) on a measured token workload, using the calibrated coefficients.
+    """The paper's two-rate call model on a measured token workload, with calibrated coefficients.
 
     The same ``TWO_RATE`` values fig_validation uses, applied the same way -- to the per-query
     totals, as they were fitted -- so the overlay and the validation figure rest on one
@@ -135,8 +149,37 @@ def two_rate_energy_per_query(key, p_in_total, p_out_total, n_calls, batch):
     return ae.TWO_RATE[key].energy(p_in_total, p_out_total, batch)
 
 
+def datasheet_energy_per_query(key, p_in_total, p_out_total, n_calls, batch):
+    """The same two-rate form, but with the rates DERIVED from datasheet quantities.
+
+    prefill_rate and decode_rate are computed from N, beta, P, B_HBM, eta_pre and the bandwidth
+    efficiency, so this overlay does choose a utilisation where the calibrated one does not. It is
+    a prediction rather than a fit, and is drawn to show the gap between the two.
+
+    The split by ``n_calls`` matters here and does not for the calibrated form. The calibrated
+    model is linear in the token counts, so applying it to per-query totals is exact. The derived
+    decode rate carries a cache term evaluated at the call's mean context, which is quadratic in
+    the context; applying it to a whole query's totals would price one enormous call and inflate
+    that term. We therefore charge n_calls average-sized calls instead.
+    """
+    n = max(float(n_calls), 1.0)
+    return n * ae.llm_call_energy(ae.LLMS[key], HW_OVERLAY, p_in_total / n, p_out_total / n, batch)
+
+
+def datasheet_curve(df, xcol, key, batch=None):
+    """(x, predicted energy) with datasheet-derived rates, for comparison with two_rate_curve."""
+    g = df.groupby(xcol).agg(pin=("per_query_in_tok", "mean"),
+                             pout=("per_query_out_tok", "mean"),
+                             N=("team_size", "mean"), R=("rounds", "mean"),
+                             b=("decode_batch", "mean"))
+    y = np.array([datasheet_energy_per_query(key, r.pin, r.pout, r.N * r.R,
+                                             batch if batch is not None else r.b)
+                  for r in g.itertuples()])
+    return g.index.values, y
+
+
 def two_rate_curve(df, xcol, key, batch=None):
-    """(x, predicted energy) under Eq. (3); ``batch`` defaults to the frame's own serving batch."""
+    """(x, predicted energy) under the two-rate model; ``batch`` defaults to the frame's own batch."""
     g = df.groupby(xcol).agg(pin=("per_query_in_tok", "mean"),
                              pout=("per_query_out_tok", "mean"),
                              N=("team_size", "mean"), R=("rounds", "mean"),
@@ -148,7 +191,7 @@ def two_rate_curve(df, xcol, key, batch=None):
 
 
 def two_rate_accuracy(model, df):
-    """(predicted, R2, MAPE) for Eq. (3) on a measured frame, with no fitted parameter."""
+    """(predicted, R2, MAPE) for the two-rate model on a measured frame, no fitted parameter."""
     pin = df.per_query_in_tok.values.astype(float)
     pout = df.per_query_out_tok.values.astype(float)
     ncalls = np.maximum(df.team_size.values.astype(float) * df.rounds.values.astype(float), 1.0)
@@ -182,29 +225,39 @@ def measured_rates(df):
 # ---------------------------------------------------------------------------
 
 def fig_scaling(data_dir, out_dir):
-    """Measured scaling in three panels, with Eq. (3) overlaid on (a) and (b).
+    """Measured scaling in three panels, with the two-rate model overlaid on (a) and (b).
 
     Throughout: markers joined by a heavy line are MEASURED; thin unmarked lines are the MODEL,
-    Eq. (3) evaluated on the same measured token workload at the same serving batch.
+    The model evaluated on the same measured token workload at the same serving batch.
     """
     qwen = ae.LLMS["qwen2_5_7b"]
     fig, ax = plt.subplots(1, 3, figsize=(7.1, 2.3))
 
     # (a) reasoning depth: carry vs free, both models, at the high query budget where the gap shows
-    for tag, fname, style, col in [
-            ("Qwen carry (meas.)",  MEASURED[0][3][0], "o-",  "#1f77b4"),
-            ("Qwen free (meas.)",   MEASURED[0][3][1], "o--", "#1f77b4"),
-            ("Llama carry (meas.)", MEASURED[1][3][0], "s-",  "#ff7f0e"),
-            ("Llama free (meas.)",  MEASURED[1][3][1], "s--", "#ff7f0e")]:
+    # measurements as markers only. Connecting them would draw four strong lines through the
+    # panel and bury the two overlays, which are the point of the comparison; carry and free are
+    # separated by filled against open markers instead of by line style.
+    for tag, fname, mk, filled, col in [
+            ("Qwen carry (meas.)",  MEASURED[0][3][0], "o", True,  "#1f77b4"),
+            ("Qwen free (meas.)",   MEASURED[0][3][1], "o", False, "#1f77b4"),
+            ("Llama carry (meas.)", MEASURED[1][3][0], "s", True,  "#ff7f0e"),
+            ("Llama free (meas.)",  MEASURED[1][3][1], "s", False, "#ff7f0e")]:
         x, y = _mean_curve(load(data_dir, fname), "rounds", "per_query_energy_j")
-        ax[0].plot(x, y, style, color=col, label=tag, ms=3.5, lw=1.2, zorder=3)
-    # Eq. (3) evaluated on each measured workload at its own serving batch, one curve per model
+        ax[0].plot(x, y, marker=mk, ls="none", color=col, label=tag, ms=4.2,
+                   mfc=col if filled else "white", mew=1.1, zorder=3)
+    # the model evaluated on each measured workload at its own serving batch, one curve per model
     # and condition, in the model's own colour. Drawn pale and unmarked so that the eye separates
     # model from measurement without needing four more legend entries.
     for label, key, _agents, depth, col, _mk in MEASURED:
         for fname, ls in ((depth[0], "-"), (depth[1], "--")):
-            xa, ya = two_rate_curve(load(data_dir, fname), "rounds", key)
-            ax[0].plot(xa, ya, ls, color=col, lw=1.0, alpha=0.55, zorder=1)
+            frame = load(data_dir, fname)
+            xa, ya = two_rate_curve(frame, "rounds", key)
+            ax[0].plot(xa, ya, ls, color=col, lw=1.4, alpha=0.95, zorder=2)
+            # the same form with rates derived from datasheet quantities rather than fitted, so
+            # a utilisation is chosen here where the calibrated overlay chooses none
+            xd, yd = datasheet_curve(frame, "rounds", key)
+            dash = {"dashes": (1.2, 1.4)} if ls == "--" else {"dashes": (3.5, 1.6)}
+            ax[0].plot(xd, yd, color="0.35", lw=1.1, alpha=0.9, zorder=2, **dash)
             meas = load(data_dir, fname).groupby("rounds").per_query_energy_j.mean().values
             err = 100 * (ya - meas) / meas
             print(f"  [depth {label:12s} {'carry' if ls == '-' else 'free ':5s}] "
@@ -213,24 +266,50 @@ def fig_scaling(data_dir, out_dir):
     ax[0].set_ylabel("energy / query (J)")
     ax[0].set_title("(a) depth: carry vs free")
     h0, l0 = ax[0].get_legend_handles_labels()
-    h0.append(Line2D([0], [0], color="0.45", lw=1.0, alpha=0.6))
-    l0.append("Eq. (3), model")
-    ax[0].legend(h0, l0, frameon=False, fontsize=5)
+    # the calibrated overlay is drawn in each model's own colour, so a single grey key would
+    # misdescribe it; composite handles show both colours and the carry/free line style at once
+    _c = ("#1f77b4", "#ff7f0e")
+    h0.append(tuple(Line2D([0], [0], color=c, lw=1.4) for c in _c))
+    l0.append("two-rate, calib. (carry)")
+    h0.append(tuple(Line2D([0], [0], color=c, lw=1.4, ls="--") for c in _c))
+    l0.append("two-rate, calib. (free)")
+    # the datasheet overlay is drawn per condition too, and in one grey for every model, so it
+    # needs two single-colour keys rather than one
+    h0.append(Line2D([], [], color="0.35", lw=1.1, dashes=(3.5, 1.6)))
+    l0.append("two-rate, datasheet (carry)")
+    h0.append(Line2D([], [], color="0.35", lw=1.1, dashes=(1.2, 1.4)))
+    l0.append("two-rate, datasheet (free)")
+    # single column, upper left: the data rises left to right, so that corner is the free one
+    ax[0].legend(h0, l0, frameon=False, fontsize=4.2, loc="upper left",
+                 handlelength=1.7, handletextpad=0.4, labelspacing=0.32, borderpad=0.1,
+                 handler_map={tuple: HandlerTuple(ndivide=None, pad=0.0)})
 
     # (b) agent count at a small and a large serving batch (Qwen)
     d = load(data_dir, MEASURED[0][2])
-    for b, style in [(16, "o-"), (256, "^-")]:
+    # This panel is Qwen only, so batch is encoded as a blue ramp. The default colour cycle would
+    # give the second batch C1, the orange that means Llama in the other panels and in fig 2.
+    BATCH_BLUE = ((16, "#6baed6"), (256, "#08519c"))
+    # markers only, as in (a): with two overlay families per batch, joined measurements would
+    # bury them
+    for (b, col), mk in zip(BATCH_BLUE, ("o", "^")):
         g = d[d.decode_batch == b].groupby("team_size").per_query_energy_j.mean()
-        ax[1].plot(g.index.values, g.values, style, label=f"$b$={b} (meas.)", ms=4, zorder=3)
-    # Eq. (3) carries a batch term, so it yields one curve per batch rather than one for both.
-    for bb, col in ((16, "C0"), (256, "C1")):
-        xb, yb = two_rate_curve(d[d.decode_batch == bb], "team_size",
-                                MEASURED[0][1], batch=bb)
-        ax[1].plot(xb, yb, ":", color=col, lw=1.4, zorder=1,
-                   label=f"Eq. (3), $b$={bb}")
-        meas = d[d.decode_batch == bb].groupby("team_size").per_query_energy_j.mean().values
+        ax[1].plot(g.index.values, g.values, marker=mk, ls="none", color=col,
+                   label=f"$b$={b} (meas.)", ms=4.2, zorder=3)
+    # the model carries a batch term, so it yields one curve per batch rather than one for both.
+    # Colour encodes the batch here; line style encodes calibrated against datasheet, matching (a).
+    for bb, col in BATCH_BLUE:
+        frame = d[d.decode_batch == bb]
+        xb, yb = two_rate_curve(frame, "team_size", MEASURED[0][1], batch=bb)
+        ax[1].plot(xb, yb, "-", color=col, lw=1.4, zorder=2,
+                   label=f"two-rate, calib. ($b$={bb})")
+        xd, yd = datasheet_curve(frame, "team_size", MEASURED[0][1], batch=bb)
+        ax[1].plot(xd, yd, color=col, lw=1.2, zorder=2, dashes=(3.5, 1.6),
+                   label=f"two-rate, datasheet ($b$={bb})")
+        meas = frame.groupby("team_size").per_query_energy_j.mean().values
         err = 100 * (yb - meas) / meas
-        print(f"  [scaling b={bb:>3}] Eq.(3) vs measured: {err.min():+.0f}%..{err.max():+.0f}%")
+        errd = 100 * (yd - meas) / meas
+        print(f"  [scaling b={bb:>3}] calibrated {err.min():+.0f}%..{err.max():+.0f}%"
+              f"   datasheet {errd.min():+.0f}%..{errd.max():+.0f}%")
     ax[1].set_xscale("log"); ax[1].set_yscale("log")
     # A log axis spanning only 2..30 makes matplotlib label the MINOR ticks in scientific notation
     # (2x10^0, 3x10^0, ...), which collides on a panel this narrow, and puts a major tick at 10^2
@@ -240,13 +319,15 @@ def fig_scaling(data_dir, out_dir):
     ax[1].set_title("(b) agent count")
     h1, l1 = ax[1].get_legend_handles_labels()
 
-    ax[1].legend(h1, l1, frameon=False, fontsize=5)
+    ax[1].legend(h1, l1, frameon=False, fontsize=4.4, loc="upper left",
+                 labelspacing=0.3, handlelength=1.7, handletextpad=0.4)
 
-    # (c) exponent a vs batch. The single-rate model cannot appear here at all: eta is a constant
-    # scale factor and cancels exactly from a log-log slope, so every eta gives the same flat
-    # line. Eq. 5 has a batch term, so it predicts the rise the measurements show.
-    # No model line: eta is a constant scale factor and cancels exactly from a log-log slope,
-    # so every utilisation predicts the same, batch-independent exponent.
+    # (c) exponent a vs batch, measurement only. The two-rate model can predict this quantity --
+    # c_dec(b) shrinks with the batch while c_pre does not, so the prefill term takes over and the
+    # slope rises -- but it overshoots badly at large batch, reaching 1.58 against a measured 1.42
+    # on Qwen and 1.45 against 1.17 on Llama. The overshoot is anchored at N=2, where the model
+    # under-predicts by 46-63% at b=256, so plotting it here would display a localised residual as
+    # a systematic slope error. The panel therefore carries measurement only.
     batches = []
     for label, key, fname, _depth, col, _mk in MEASURED:
         d = load(data_dir, fname)
@@ -280,12 +361,12 @@ def _decade_free_ticks(ax, ticks):
 
 
 def fig_validation(data_dir, out_dir):
-    """The two-rate form of Eq. (3) against measurement, with measured coefficients.
+    """The two-rate call model against measurement, with measured coefficients.
 
     Coefficients are the calibrated ``TWO_RATE`` values, so the figure tests the *form* -- that a
     compute-bound prefill rate plus a batch-amortising decode rate describes the data -- separately
     from the hardware derivation of Eqs. (4)-(5), which ``validate_two_rate()`` reports.
-    Eq. (3) is applied to the per-query totals, as the coefficients were fitted.
+    The model is applied to the per-query totals, as the coefficients were fitted.
     """
     fig, ax = plt.subplots(1, 2, figsize=(7.0, 2.6))
     span = []
@@ -315,7 +396,7 @@ def fig_validation(data_dir, out_dir):
 
     # (b) the two rates, extracted per batch by regressing E = alpha p_in + beta p_out. alpha
     #     (prefill) is batch-independent; beta (decode) collapses as a_dec/b + c_0, the
-    #     memory-bound law Eq. (5) asserts.
+    #     memory-bound law the decode rate asserts.
     for label, key, agents, _depth, col, mk in MEASURED:
         d = load(data_dir, agents)
         cal = ae.TWO_RATE[key]
@@ -443,7 +524,7 @@ def fig_components(out_dir):
     """How the composition of workflow energy moves with loop depth, at three serving batches.
 
     The four-agent RAG team is re-run over its own transcript for K = 1..6 rounds, the depth range
-    the measured sweeps cover. Calls are priced with Eq. (3) using the measured coefficients of
+    the measured sweeps cover. Calls are priced with the two-rate model using the coefficients of
     fig_validation, so the prefill and decode bands are its two terms. The black curve is total
     E_W on the right-hand axis, fixed to one range across panels so the regimes are comparable.
     """

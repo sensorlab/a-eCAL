@@ -154,36 +154,32 @@ LLMS = {
 #
 # A call has two phases with different energy characteristics, so one rate cannot describe both.
 #
-#   E_call(p_in, p_out; b) = c_pre * p_in + c_dec(b) * p_out                        (Eq. 3)
+#   E_call(p_in, p_out; b) = c_pre * p_in + c_dec(b) * p_out            (the two-rate model)
 #
 # PREFILL processes the whole prompt in one parallel pass. It is compute-bound at near-peak
 # utilisation and essentially batch-independent:
 #
-#   c_pre = 2 N P / (eta_pre * Pi)                                                  (Eq. 4)
+#   c_pre = 2 N P / (eta_pre * Pi)                                         (the prefill rate)
 #
 # DECODE emits one token at a time and is memory-bandwidth-bound. Each step streams the weight
 # bytes from HBM once for the whole batch, so that cost amortises over the b concurrently
 # decoding sequences, while every sequence re-reads its own cache and that term does not:
 #
-#   c_dec(b) = P / (eps B_HBM) * ( N beta / b  +  gamma * cbar )                    (Eq. 5)
+#   c_dec(b) = P / (eps B_HBM) * ( N beta / b  +  gamma * cbar )            (the decode rate)
 #
 # eps is the fraction of peak HBM bandwidth production kernels sustain, conventionally
 # 0.65-0.85. Omitting it (eps = 1) makes the model under-predict measured energy by 17-66%;
 # at eps = 0.70 the fit over 756 measured configurations is R^2 = 0.99 with no free
 # parameter. It is a datasheet-adjacent constant, not a calibration knob.
 #
-# NOTE on the weight term. The paper writes 2N beta, carrying the "2N" of the FLOP convention
-# into a byte count. The weight footprint is N beta bytes, not 2N beta: for Qwen2.5-7B at bf16
-# that is 15.2 GB, giving P N beta / B_HBM = 2.99 J against a measured a_dec of 3.2 J, whereas
-# 2N beta would give 5.98 J. This module uses N beta; see validate_two_rate().
 
 def prefill_rate(model: LLM, hw: Hardware) -> float:
-    """c_pre [J per prompt token]: compute-bound, batch-independent (Eq. 4)."""
+    """c_pre [J per prompt token]: compute-bound, batch-independent."""
     return 2.0 * model.n_active * hw.power / (hw.eta_pre * hw.flops_peak)
 
 
 def decode_rate(model: LLM, hw: Hardware, batch: float = 1.0, context: float = 0.0) -> float:
-    """c_dec(b) [J per generated token]: memory-bound, amortising over the batch (Eq. 5)."""
+    """c_dec(b) [J per generated token]: memory-bound, amortising over the batch."""
     if hw.bandwidth <= 0.0:
         raise ValueError(f"{hw.name} has no HBM bandwidth set")
     weights = model.n_active * model.bytes_per_param / max(float(batch), 1.0)
@@ -210,7 +206,11 @@ def call_latency(model: LLM, hw: Hardware, p_in: float, p_out: float,
 
 def llm_call_energy(model: LLM, hw: Hardware, p_in: float, p_out: float,
                     batch: float = 1.0) -> float:
-    """Energy [J] of one LLM call under the two-rate model (Eq. 3).
+    """Energy [J] of one LLM call under the two-rate model, from datasheet quantities.
+
+    The rates come from prefill_rate/decode_rate rather than from the measured TWO_RATE
+    coefficients, so this is a derivation rather than a calibration. The figures use the measured
+    path instead; see two_rate_energy_per_query in make_figures.py.
 
     The cache term is evaluated at the call's mean context, p_in + p_out/2, since the transcript
     grows by one token per decode step.
@@ -230,7 +230,7 @@ class TwoRateCalib:
     """Two-rate coefficients [J/token] measured directly on the A100 sweeps.
 
     ``c_dec(b) = a_dec / b + kv_floor``. These are fitted, not derived: they are what a
-    least-squares fit of Eq. (3) to the measured per-query energies returns, averaged over
+    least-squares fit of the two-rate call model to the measured per-query energies returns, averaged over
     GPQA / GSM-Hard / MMLU-Hard under vLLM. They are the calibration counterpart of Eqs. (4)-(5),
     and the validation figure uses them so that the figure tests the two-rate *form* independently
     of the hardware derivation.
@@ -244,7 +244,7 @@ class TwoRateCalib:
         return self.a_dec / max(float(batch), 1.0) + self.kv_floor
 
     def energy(self, p_in: float, p_out: float, batch: float) -> float:
-        """Eq. (3) with measured coefficients."""
+        """The two-rate call model with measured coefficients."""
         return self.c_pre * p_in + self.c_dec(batch) * p_out
 
 
@@ -359,7 +359,7 @@ class Workflow:
     history_rounds: Optional[int] = None   # None = every completed round
     round_size: int = 1                    # steps per round (team width in a debate)
     exclude_self: bool = False             # skip the agent's own output within the window
-    serving_batch: float = 1.0         # b in Eq. (5); decode amortises over it
+    serving_batch: float = 1.0         # b of the decode rate; decode amortises over it
     calib: Optional["TwoRateCalib"] = None   # measured coefficients; None uses Eqs. (4)-(5)
     gamma_v: float = 0.10              # virtualization / orchestration overhead (eCAL's gamma_v)
     tx_energy_per_message: float = 0.0  # inter-agent transmission energy [J] (OSI model)
@@ -369,7 +369,7 @@ class Workflow:
         rs = max(self.round_size, 1)
         transcript = []      # (round index, agent, tokens) for outputs and tool observations
         e_llm = e_tool = e_ret = e_tx = 0.0
-        e_prefill = e_decode = 0.0   # the two terms of Eq. (3)
+        e_prefill = e_decode = 0.0   # the two terms of the two-rate call model
         t_llm = 0.0          # request's share of device time [s]
         t_wall = 0.0         # wall-clock time of the calls, run back to back [s]
         useful_out = 0
@@ -470,10 +470,11 @@ def four_agent_rag_workflow(model: Optional[LLM] = None, hw: Optional[Hardware] 
     the numbers quoted in the text cannot drift apart. Callers choose the model and hardware;
     the token budget and topology are fixed.
 
-    This is the only case-study workflow in the codebase, and it settles audit finding C5: the
-    competing planner-plus-two-workers topology that produced the manuscript's 2.4e3 J has been
-    removed. For Llama-3 8B on H100 at eta = 0.05 this one gives E_W = 1527 J, agentic-eCAL
-    8.8e-2 J/bit and crossover G* = 2.1e9 -- quote those everywhere.
+    This is the only case-study workflow in the codebase. A competing planner-plus-two-workers
+    topology, which produced the 2.4e3 J and 43.2 kbit the manuscript once quoted, was removed;
+    audit finding C5 records that regime choice as still open for the co-authors rather than
+    settled here. Energies therefore depend on the operating point and are not quoted in this
+    docstring, where they went stale twice; run make_figure_workflow.py for current values.
     """
     ret = Retrieval(k_chunks=5, chunk_tokens=256)
     tool = Tool(name="code", energy=2.0, obs_tokens=150)
@@ -571,7 +572,7 @@ def implied_batch(model: LLM, hw: Hardware, j_per_token: float,
     """Serving batch at which the two-rate model reproduces a measured J/output-token anchor.
 
     A batch-aware call model should not be tuned to hit a literature number; it should say what
-    operating point that number corresponds to. Solving Eq. (3) for b is the honest use of it.
+    operating point that number corresponds to. Solving the two-rate model for b is the honest use of it.
     """
     cbar = p_in + p_out / 2.0
     fixed = prefill_rate(model, hw) * p_in / p_out \
@@ -585,7 +586,7 @@ def implied_batch(model: LLM, hw: Hardware, j_per_token: float,
 def validate_against_samsi() -> dict:
     """Samsi et al. (2023) measured 3-4 J/token for LLaMA-65B on A100s.
 
-    Under Eq. (5) the b = 1 limit is P N beta / B_HBM = 25.6 J/token, so that anchor cannot be a
+    Under the decode rate the b = 1 limit is P N beta / B_HBM = 25.6 J/token, so that anchor cannot be a
     single-stream measurement; it implies a serving batch of roughly 7-9. Tensor parallelism does
     not change this, since sharding over n devices divides the bytes each reads by n while
     multiplying board power by n, leaving P W / B invariant.

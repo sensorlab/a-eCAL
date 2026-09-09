@@ -15,18 +15,29 @@ model that prices it.
 from __future__ import annotations
 
 import os
+import re
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 
 import agentic_ecal as ae
+import roles
 import osi
 import placement as pl
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+def _paper_figures(default="figures"):
+    """Newest vN/figures alongside the repo, or repo-root figures/ if none exists."""
+    root = os.path.dirname(os.path.dirname(HERE))
+    vs = sorted((d for d in os.listdir(root)
+                 if re.fullmatch(r"v\d+", d) and os.path.isdir(os.path.join(root, d))),
+                key=lambda d: int(d[1:]))
+    return os.path.join(root, vs[-1] if vs else "", default)
+
 ROOT = os.path.dirname(os.path.dirname(HERE))
-FIGDIR = os.path.join(ROOT, "figures")
+FIGDIR = _paper_figures()
 
 # colours for the four prompt sources, in the order they are stacked
 SRC = [("system",    "0.80"),
@@ -35,7 +46,7 @@ SRC = [("system",    "0.80"),
        ("history",   "C1")]
 
 CALIB = ae.TWO_RATE["llama3_8b"]     # the case study's model, measured coefficients
-# b=1 lies below the fitted range b in [2,256]; Eq. (5) is derived rather than fitted, so
+# b=1 lies below the fitted range b in [2,256]; the decode rate is derived rather than fitted, so
 # extrapolating is principled, but the caption says so.
 REGIMES = [(1, "$b=1$", "0.62"), (64, "$b=64$", "C0"), (256, "$b=256$", "C2")]
 # Every bearer of Table III except the NB-IoT uplink, which the manuscript excludes. Note
@@ -74,7 +85,7 @@ def decompose(wf: ae.Workflow):
 
 
 def step_energies(rows, batch):
-    """Per-step prefill/decode energy [J] at a given serving batch, via Eq. (3)."""
+    """Per-step prefill/decode energy [J] at a given serving batch, via the two-rate model."""
     out = []
     for r in rows:
         pre = CALIB.c_pre * r["p_in"]
@@ -127,12 +138,18 @@ def transmission_panel(ax, wf):
             e += osi.segment_energy(bits, b.eps, b.failure_rate) + osi.endpoint_stack_energy(bits)
         names.append(TABLE3_NAME[key]); vals.append(e)
     ax.bar(range(len(vals)), vals, 0.6, color="C2")
-    # b=64 and b=256 differ by only 18%, so their reference lines would overprint; bracket
-    # the range with the single-stream extreme and the production operating point instead.
-    for batch, lab, col in REGIMES[:2]:
-        ew = workflow_energy(batch)[0]
-        ax.axhline(ew, color=col, ls="--", lw=1.0)
-        ax.text(-0.42, ew * 1.5, f"$E_W$, {lab}", fontsize=5.8, color=col, ha="left")
+    # b=64 and b=256 are only 18% apart, which on this log axis is thinner than the linewidth,
+    # so the batched regime is drawn as a band bounded by the two rather than as two lines.
+    e1 = workflow_energy(1)[0]
+    ax.axhline(e1, color=REGIMES[0][2], ls="--", lw=1.0)
+    ax.text(-0.42, e1 * 1.9, f"$E_W$, {REGIMES[0][1]}", fontsize=5.8,
+            color=REGIMES[0][2], ha="left")
+    lo, hi = workflow_energy(256)[0], workflow_energy(64)[0]
+    ax.axhspan(lo, hi, color=REGIMES[1][2], alpha=0.20, lw=0)
+    for e in (lo, hi):
+        ax.axhline(e, color=REGIMES[1][2], ls="--", lw=1.0)
+    ax.text(-0.42, hi * 1.9, "$E_W$, $b=64$–$256$", fontsize=5.8,
+            color=REGIMES[1][2], ha="left")
     ax.set_yscale("log")
     ax.set_xticks(range(len(names)))
     ax.set_xticklabels(names, fontsize=6.4, rotation=20, ha="right")
@@ -145,16 +162,21 @@ def transmission_panel(ax, wf):
 
 def schematic(ax, rows):
     """Boxes left to right; both attachments on an upper row, the transcript arc below."""
-    ax.set_xlim(0, 10); ax.set_ylim(0, 3.75); ax.axis("off")
-    w, h, y = 1.9, 0.72, 1.42
+    # the y-range is trimmed to the drawn content: an axis with dead space at top or
+    # bottom reads as a gap between this panel and the row beneath it
+    ax.set_xlim(0, 10); ax.set_ylim(0.32, 3.70); ax.axis("off")
+    w, h, y = 1.9, 0.84, 1.36
     y_att = 2.55                      # attachment row, clear of the boxes
     xs = [0.35 + i * 2.42 for i in range(len(rows))]
+    # each agent is tinted by its functional class, the same classes fig_topologies and
+    # make_figure_infra use, so a "retriever" here and an "inspector" there read as one role
     for x, r in zip(xs, rows):
+        cls = roles.role_class(r["agent"])
         ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.05",
-                                    fc="white", ec="C0", lw=1.1))
-        ax.text(x + w / 2, y + h * 0.62, r["agent"], ha="center", va="center",
+                                    fc=cls + "22", ec=cls, lw=1.4))
+        ax.text(x + w / 2, y + h * 0.68, r["agent"], ha="center", va="center",
                 fontsize=7.5, weight="bold")
-        ax.text(x + w / 2, y + h * 0.22, f"{r['p_in']}$\\to${r['p_out']}",
+        ax.text(x + w / 2, y + h * 0.25, f"{r['p_in']}$\\to${r['p_out']}",
                 ha="center", va="center", fontsize=6.3, color="0.35")
     for x in xs[:-1]:
         ax.add_patch(FancyArrowPatch((x + w, y + h / 2), (x + 2.42, y + h / 2),
@@ -178,6 +200,13 @@ def schematic(ax, rows):
                                  mutation_scale=7, color="0.55", lw=0.9, ls="--"))
     ax.text(5.2, 0.46, "accumulated transcript", fontsize=6.3, color="0.45", ha="center",
             va="center", bbox=dict(fc="white", ec="none", pad=1.2))
+    # class key, below the graph: set_title reserves the space above the axes
+    used = {roles.role_class(r["agent"]) for r in rows}
+    for i, (c, lab) in enumerate(roles.legend_entries(used)):
+        bx = 1.55 + i * 2.55
+        ax.add_patch(FancyBboxPatch((bx, 3.42), 0.26, 0.19, boxstyle="round,pad=0.02",
+                                    fc=c + "22", ec=c, lw=1.0))
+        ax.text(bx + 0.36, 3.515, lab, fontsize=5.8, color="0.3", va="center")
 
 
 def composition(ax, rows):
@@ -207,7 +236,7 @@ def main():
     assert sum(x["p_in"] for x in rows) == r["prefill_tokens"], "composition drifted from run()"
 
     fig = plt.figure(figsize=(7.1, 4.15))
-    gs = fig.add_gridspec(2, 3, height_ratios=[0.78, 1.0], hspace=0.55, wspace=0.34)
+    gs = fig.add_gridspec(2, 3, height_ratios=[0.70, 1.0], hspace=0.26, wspace=0.34)
     ax_a = fig.add_subplot(gs[0, :])
     ax_b = fig.add_subplot(gs[1, 0])
     ax_c = fig.add_subplot(gs[1, 1])
