@@ -1,132 +1,260 @@
 #!/usr/bin/env python3
-"""Framing figure: an agentic workflow mapped onto a network substrate.
-
-The paper's terms all arise from one picture. A workflow is a logical graph whose nodes are LLM
-calls and whose edges carry context between them. Deployment maps that graph onto a physical
-substrate of accelerators at successive network tiers. Where an edge stays inside a tier its
-context is prompt tokens and is charged to E_call; where it crosses a tier boundary the same
-context becomes traffic and is charged additionally to E_tx at the bearer's intensity. Placement is
-that mapping, and nothing else.
-
-The two layers are drawn as ONE diagram -- tier as the vertical axis, workflow order as the
-horizontal -- rather than as a graph above a substrate joined by projection lines. The earlier
-two-layer form spent most of its area on those lines and on the gap between the layers, and was
-authored 7.1 in wide while the manuscript includes it at \\columnwidth, so its labels reached the
-page below 3 pt. Everything here is sized for the column it is actually placed in.
-
-Writes figures/fig_overview.pdf (default ../../v4/figures).
-"""
-from __future__ import annotations
-
-import os, re, sys
+import os, sys
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch, Circle
 
-import agentic_ecal as ae
-import osi
+def build_figure(out_pdf=None):
+    if out_pdf is None:
+        if len(sys.argv) > 1:
+            out_pdf = sys.argv[1]
+        else:
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            out_pdf = os.path.join(base_dir, "v6", "figures", "fig_overview.pdf")
+    plt.rcParams.update({
+        "font.family": "DejaVu Sans",
+        "font.size": 7,
+        "text.usetex": False,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42
+    })
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+    # Exact IEEE single column: width 3.45 in, height 2.85 in
+    fig, ax = plt.subplots(figsize=(3.45, 2.85), dpi=300)
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 82.6)
+    ax.set_aspect("equal")
+    ax.axis("off")
 
-def _paper_figures(default="figures"):
-    """Newest vN/figures alongside the repo, or repo-root figures/ if none exists."""
-    root = os.path.dirname(os.path.dirname(HERE))
-    vs = sorted((d for d in os.listdir(root)
-                 if re.fullmatch(r"v\d+", d) and os.path.isdir(os.path.join(root, d))),
-                key=lambda d: int(d[1:]))
-    return os.path.join(root, vs[-1] if vs else "", default)
+    # Colors with matching contour = fill (ec = fc)
+    C_TIER_BG     = "#f8fafc"
+    C_TIER_HEAD   = "#edf2f7"
+    C_TIER_BORDER = "#cbd5e1"
+    
+    C_AGENT_FC    = "#bae6fd" # sky-200
+    C_AGENT_TXT   = "#0369a1" # sky-700
+    
+    C_LLM_FC      = "#e9d5ff" # purple-200
+    C_LLM_TXT     = "#7e22ce" # purple-700
+    
+    C_TOOL_FC     = "#bbf7d0" # green-200
+    C_TOOL_TXT    = "#15803d" # green-700
+    
+    C_RAG_FC      = "#fed7aa" # orange-200
+    C_RAG_TXT     = "#c2410c" # orange-700
+    
+    C_RED         = "#dc2626"
+    C_GRAY        = "#64748b"
+    C_TEXT_DARK   = "#0f172a"
+    C_SLATE       = "#475569"
 
-OUT_DEFAULT = _paper_figures()
+    # -------------------------------------------------------------------------
+    # 1. Legend Bar at Top (y: 76.2 - 82.0) - STACKED Intra-tier & Cross-tier
+    # -------------------------------------------------------------------------
+    ax.add_patch(FancyBboxPatch((1.0, 76.2), 98.0, 5.8, boxstyle="round,pad=0.25",
+                                fc="#ffffff", ec="#cbd5e1", lw=0.7, zorder=2))
 
-# Equal data aspect, so the agent markers are round: the y-range is the x-range scaled by the
-# figure's own aspect. Everything below is in those units.
-XR, YR = 12.0, 8.0
-X0, X1 = 2.35, 11.75                       # band extent; the tier labels sit to the left of X0
-BH, GAP = 1.95, 0.40                       # band height, and the gap that IS the bearer
+    # Agent circle
+    ax.add_patch(Circle((4.2, 79.1), 1.7, fc=C_AGENT_FC, ec=C_AGENT_FC, lw=0, zorder=3))
+    ax.text(6.6, 79.1, "Agent ($a_i, c_a$)", va="center", fontsize=4.8, weight="bold", color=C_TEXT_DARK, zorder=4)
 
-# tier bands, bottom to top: (label, memory, y0)
-TIERS = [("far edge", "8 GB", 0.20), ("edge", "64 GB", 2.55), ("core DC", "80 GB", 4.90)]
-BEARERS = [("5G", "10^{-6}"), ("metro", "10^{-8}")]   # far/edge boundary, edge/core boundary
+    # LLM box
+    ax.add_patch(FancyBboxPatch((23.0, 77.6), 2.9, 2.9, boxstyle="round,pad=0.12", fc=C_LLM_FC, ec=C_LLM_FC, lw=0, zorder=3))
+    ax.text(26.7, 79.1, "LLM ($E_{\\mathrm{call}}$)", va="center", fontsize=4.8, weight="bold", color=C_TEXT_DARK, zorder=4)
 
-# agents: (label, x, tier, dy within the band)
-AGENTS = [("$a_1$", 3.15, 0, 1.35), ("$a_2$", 4.75, 0, 1.35), ("$a_3$", 6.55, 1, 1.02),
-          ("$a_4$", 8.60, 2, 1.42), ("$a_5$", 8.60, 2, 0.53), ("$a_6$", 10.65, 2, 0.97)]
-EDGES = [(0, 1), (1, 2), (2, 3), (2, 4), (3, 5), (4, 5)]
-R = 0.36                                   # agent radius
+    # Tool box
+    ax.add_patch(FancyBboxPatch((42.0, 77.6), 2.9, 2.9, boxstyle="round,pad=0.12", fc=C_TOOL_FC, ec=C_TOOL_FC, lw=0, zorder=3))
+    ax.text(45.7, 79.1, "Tool ($E_{\\mathrm{tool}}$)", va="center", fontsize=4.8, weight="bold", color=C_TEXT_DARK, zorder=4)
 
-HANDOFF = 2700          # tokens on one hand-off, the case study's largest
+    # RAG box
+    ax.add_patch(FancyBboxPatch((60.5, 77.6), 2.9, 2.9, boxstyle="round,pad=0.12", fc=C_RAG_FC, ec=C_RAG_FC, lw=0, zorder=3))
+    ax.text(64.2, 79.1, "RAG ($E_{\\mathrm{ret}}$)", va="center", fontsize=4.8, weight="bold", color=C_TEXT_DARK, zorder=4)
 
+    # Stacked Intra-tier (top) and Cross-tier (bottom)
+    ax.plot([79.5, 83.2], [80.3, 80.3], "-", color=C_GRAY, lw=1.3, zorder=3)
+    ax.text(84.3, 80.3, "Intra-tier", va="center", fontsize=4.4, color=C_GRAY, zorder=4)
 
-def crossing_ratio(tokens=HANDOFF, eps=1e-6):
-    """Prefill energy of a hand-off against the energy of transporting it. The figure's point."""
-    bits = tokens * ae.BITS_PER_TOKEN
-    tx = osi.segment_energy(bits, eps, 0.0) + osi.endpoint_stack_energy(bits)
-    return ae.TWO_RATE["qwen2_5_7b"].c_pre * tokens / tx
+    ax.plot([79.5, 83.2], [77.8, 77.8], "-", color=C_RED, lw=1.6, zorder=3)
+    ax.text(84.3, 77.8, "Cross-tier", va="center", fontsize=4.4, weight="bold", color=C_RED, zorder=4)
 
+    # -------------------------------------------------------------------------
+    # 2. Three Network Tiers
+    # -------------------------------------------------------------------------
+    tiers = [
+        {"name": "Core Cloud / DC", "spec": "M_u \\geq 80\\,\\mathrm{GB}", "desc": "e.g., A100 / H100 (models $\\geq$ 70B, 27B)", "y0": 54.0, "h": 20.0},
+        {"name": "Telco Edge / MEC", "spec": "M_u \\approx 24-64\\,\\mathrm{GB}", "desc": "e.g., AGX Orin / L4 (models 7B–14B)", "y0": 28.5, "h": 20.5},
+        {"name": "Far Edge / Device", "spec": "M_u \\leq 8\\,\\mathrm{GB}", "desc": "e.g., Orin Nano (models $\\leq$ 3B–4B)", "y0": 2.0, "h": 21.5}
+    ]
 
-def draw(ax):
-    ax.set_xlim(0, XR); ax.set_ylim(0, YR); ax.set_aspect("equal"); ax.axis("off")
+    for t in tiers:
+        ax.add_patch(FancyBboxPatch((1.0, t["y0"]), 98.0, t["h"], boxstyle="round,pad=0.25",
+                                    fc=C_TIER_BG, ec=C_TIER_BORDER, lw=0.75, zorder=1))
+        # Header bar
+        ax.add_patch(FancyBboxPatch((1.0, t["y0"] + t["h"] - 3.6), 98.0, 3.6, boxstyle="round,pad=0.1",
+                                    fc=C_TIER_HEAD, ec=C_TIER_BORDER, lw=0.5, zorder=2))
+        ax.text(2.8, t["y0"] + t["h"] - 1.8, t["name"], fontsize=5.6, weight="bold", color="#1e293b", zorder=3, va="center")
+        ax.text(32.0, t["y0"] + t["h"] - 1.8, f"${t['spec']}$", fontsize=4.9, color="#475569", zorder=3, va="center")
+        ax.text(97.5, t["y0"] + t["h"] - 1.8, t["desc"], fontsize=4.3, style="italic", color="#64748b", zorder=3, va="center", ha="right")
 
-    for name, mem, y0 in TIERS:
-        ax.add_patch(FancyBboxPatch((X0, y0), X1 - X0, BH, boxstyle="round,pad=0.04",
-                                    fc="#eef2f7", ec="0.62", lw=0.8, zorder=0))
-        ax.text(X0 - 0.24, y0 + BH / 2 + 0.24, name, ha="right", va="center",
-                fontsize=6.2, weight="bold")
-        ax.text(X0 - 0.24, y0 + BH / 2 - 0.36, mem, ha="right", va="center",
-                fontsize=5.2, color="0.45")
+    # Bearer lines and badges
+    # Bearer 1: Far Edge <-> Telco Edge (midpoint y = 26.0)
+    ax.plot([1.0, 99.0], [26.0, 26.0], color="#0284c7", lw=0.8, linestyle="--", alpha=0.5, zorder=2)
+    ax.text(74.0, 26.0, "Wireless / 5G RAN Bearer ($\\varepsilon \\approx 10^{-6}\\,\\mathrm{J/b}$)", fontsize=4.5,
+            ha="center", va="center", color="#0369a1", weight="bold",
+            bbox=dict(boxstyle="round,pad=0.15", fc="#ffffff", ec="#0284c7", lw=0.5), zorder=3)
 
-    # the bearers ARE the gaps between the bands; the label punches through on a white ground
-    for i, (lab, eps) in enumerate(BEARERS):
-        yb = TIERS[i][2] + BH + GAP / 2
-        ax.plot([X0, X1 - 2.55], [yb, yb], "-", color="C0", lw=0.9, alpha=0.6, zorder=1)
-        ax.text(X1 - 2.42, yb, f"{lab}, $\\varepsilon={eps}$", ha="left", va="center",
-                fontsize=5.2, color="C0", zorder=2)
+    # Bearer 2: Telco Edge <-> Core Cloud (midpoint y = 51.5)
+    ax.plot([1.0, 99.0], [51.5, 51.5], color="#0284c7", lw=0.8, linestyle="--", alpha=0.5, zorder=2)
+    ax.text(21.0, 51.5, "Metro / Optical Bearer ($\\varepsilon \\leq 10^{-7}\\,\\mathrm{J/b}$)", fontsize=4.5,
+            ha="center", va="center", color="#0369a1", weight="bold",
+            bbox=dict(boxstyle="round,pad=0.15", fc="#ffffff", ec="#0284c7", lw=0.5), zorder=3)
 
-    pos = {}
-    for i, (lab, x, t, dy) in enumerate(AGENTS):
-        pos[i] = (x, TIERS[t][2] + dy)
-        ax.add_patch(Circle(pos[i], R, fc="#cfe0f5", ec="C0", lw=1.1, zorder=3))
-        ax.text(*pos[i], lab, ha="center", va="center", fontsize=6.0, zorder=4)
+    # -------------------------------------------------------------------------
+    # 3. Agent Nodes & Workflows
+    # -------------------------------------------------------------------------
+    R_NODE = 2.8
 
-    tier_of = {i: a[2] for i, a in enumerate(AGENTS)}
-    for u, v in EDGES:
-        cross = tier_of[u] != tier_of[v]
-        ax.add_patch(FancyArrowPatch(pos[u], pos[v], arrowstyle="-|>", mutation_scale=7,
-                                     shrinkA=11, shrinkB=11, lw=1.5 if cross else 0.8,
-                                     color="C3" if cross else "0.55",
-                                     connectionstyle="arc3,rad=0.10", zorder=2))
+    # --- FAR EDGE TIER ---
+    pos_a1 = (7.5, 14.5)
+    pos_a2 = (23.0, 14.5)
+    
+    # Render a1, a2
+    ax.add_patch(Circle(pos_a1, R_NODE, fc=C_AGENT_FC, ec=C_AGENT_FC, lw=0, zorder=4))
+    ax.text(pos_a1[0], pos_a1[1] + 0.3, "$a_1$", ha="center", va="center", fontsize=5.6, weight="bold", color=C_AGENT_TXT, zorder=5)
+    ax.text(pos_a1[0], pos_a1[1] - 1.5, "$c_1$", ha="center", va="center", fontsize=3.7, color="#0284c7", zorder=5)
 
-    # the quantitative claim, in the space the far edge leaves empty, on the crossing it describes
-    mid = ((pos[1][0] + pos[2][0]) / 2, (pos[1][1] + pos[2][1]) / 2)
-    ax.annotate(f"the same context, now also traffic:\n"
-                f"$E_{{\\mathrm{{tx}}}}$ is $1/{crossing_ratio():.0f}$ of the prefill it feeds",
-                xy=mid, xytext=(6.95, 1.02), fontsize=5.0, color="C3", ha="left", va="center",
-                arrowprops=dict(arrowstyle="->", color="C3", lw=0.7,
-                                shrinkA=3, shrinkB=6, connectionstyle="arc3,rad=0.18"))
+    ax.add_patch(Circle(pos_a2, R_NODE, fc=C_AGENT_FC, ec=C_AGENT_FC, lw=0, zorder=4))
+    ax.text(pos_a2[0], pos_a2[1] + 0.3, "$a_2$", ha="center", va="center", fontsize=5.6, weight="bold", color=C_AGENT_TXT, zorder=5)
+    ax.text(pos_a2[0], pos_a2[1] - 1.5, "$c_2$", ha="center", va="center", fontsize=3.7, color="#0284c7", zorder=5)
 
-    for j, (col, lw, txt) in enumerate([("0.55", 0.8, "inside a tier: $E_{\\mathrm{call}}$"),
-                                        ("C3", 1.5, "across a tier: "
-                                                    "$E_{\\mathrm{call}}+E_{\\mathrm{tx}}$")]):
-        y = YR - 0.22 - j * 0.44
-        ax.plot([X0 + 0.05, X0 + 0.75], [y, y], "-", color=col, lw=lw)
-        ax.text(X0 + 0.88, y, txt, fontsize=5.2, color=col if col == "C3" else "0.4",
-                va="center")
+    # Net-CLI Tool below a1 (ec = fc)
+    ax.add_patch(FancyBboxPatch((1.0, 3.6), 13.0, 4.8, boxstyle="round,pad=0.15", fc=C_TOOL_FC, ec=C_TOOL_FC, lw=0, zorder=4))
+    ax.text(7.5, 6.6, "Net-CLI Tool", ha="center", va="center", fontsize=4.2, weight="bold", color=C_TOOL_TXT, zorder=5)
+    ax.text(7.5, 4.8, "Tool ($E_{\\mathrm{tool}}$)", ha="center", va="center", fontsize=3.7, weight="bold", color=C_TOOL_TXT, zorder=5)
+    ax.plot([7.5, 7.5], [8.4, 11.7], color=C_TOOL_TXT, lw=0.8, linestyle=":", zorder=3)
 
+    # Device LLM below a2 (ec = fc)
+    ax.add_patch(FancyBboxPatch((15.5, 3.6), 15.0, 4.8, boxstyle="round,pad=0.15", fc=C_LLM_FC, ec=C_LLM_FC, lw=0, zorder=4))
+    ax.text(23.0, 6.6, "Device LLM ($E_{\\mathrm{call}}$)", ha="center", va="center", fontsize=3.9, weight="bold", color=C_LLM_TXT, zorder=5)
+    ax.text(23.0, 4.8, "Weights $\\leq$ 3B–4B", ha="center", va="center", fontsize=3.5, color=C_LLM_TXT, zorder=5)
+    
+    # Call link from a2 to Device LLM (vertical dotted line)
+    ax.plot([23.0, 23.0], [8.4, 11.7], color=C_LLM_TXT, lw=0.8, linestyle=":", zorder=3)
 
-def main(out_dir=OUT_DEFAULT):
-    fig, ax = plt.subplots(figsize=(3.45, 3.45 * YR / XR))
-    draw(ax)
-    fig.tight_layout(pad=0.12)
-    os.makedirs(out_dir, exist_ok=True)
-    p = os.path.join(out_dir, "fig_overview.pdf")
-    fig.savefig(p, bbox_inches="tight"); plt.close(fig)
-    print("wrote", p)
-    tier_of = {i: a[2] for i, a in enumerate(AGENTS)}
-    cross = sum(1 for u, v in EDGES if tier_of[u] != tier_of[v])
-    print(f"  {len(AGENTS)} agents, {len(EDGES)} edges, {cross} crossing a tier boundary")
-    print(f"  {HANDOFF}-token hand-off on 5G: prefill / E_tx = {crossing_ratio():.0f}x")
+    # Call link from a1 to Device LLM (dotted line WITHOUT arrow end, as requested)
+    ax.plot([9.5, 17.5], [12.5, 8.4], color=C_LLM_TXT, lw=0.8, linestyle=":", zorder=3)
 
+    # Intra-tier hand-off a1 -> a2
+    ax.add_patch(FancyArrowPatch(pos_a1, pos_a2, arrowstyle="-|>", mutation_scale=6,
+                                 shrinkA=8, shrinkB=8, lw=1.0, color=C_GRAY, zorder=3))
+
+    # --- TELCO EDGE TIER ---
+    pos_a3 = (25.0, 37.0)
+    ax.add_patch(Circle(pos_a3, R_NODE, fc=C_AGENT_FC, ec=C_AGENT_FC, lw=0, zorder=4))
+    ax.text(pos_a3[0], pos_a3[1] + 0.3, "$a_3$", ha="center", va="center", fontsize=5.6, weight="bold", color=C_AGENT_TXT, zorder=5)
+    ax.text(pos_a3[0], pos_a3[1] - 1.5, "$c_3$", ha="center", va="center", fontsize=3.7, color="#0284c7", zorder=5)
+
+    # Cross-tier hand-off a2 -> a3 (unobstructed vertical arrow across 5G RAN)
+    ax.add_patch(FancyArrowPatch(pos_a2, pos_a3, arrowstyle="-|>", mutation_scale=8,
+                                 shrinkA=9, shrinkB=9, lw=1.5, color=C_RED, connectionstyle="arc3,rad=0.02", zorder=3))
+
+    # Telco RAG on left of a3 (ec = fc)
+    ax.add_patch(FancyBboxPatch((3.0, 39.5), 16.5, 4.4, boxstyle="round,pad=0.15", fc=C_RAG_FC, ec=C_RAG_FC, lw=0, zorder=4))
+    ax.text(11.25, 42.2, "Telco RAG ($E_{\\mathrm{ret}}$)", ha="center", va="center", fontsize=4.2, weight="bold", color=C_RAG_TXT, zorder=5)
+    ax.text(11.25, 40.6, "Vector Index Search", ha="center", va="center", fontsize=3.6, color=C_RAG_TXT, zorder=5)
+    ax.plot([19.5, 22.2], [41.7, 38.0], color=C_RAG_TXT, lw=0.8, linestyle=":", zorder=3)
+
+    # Edge LLM on left of a3 (ec = fc)
+    ax.add_patch(FancyBboxPatch((3.0, 31.5), 16.5, 4.4, boxstyle="round,pad=0.15", fc=C_LLM_FC, ec=C_LLM_FC, lw=0, zorder=4))
+    ax.text(11.25, 34.2, "Edge LLM ($E_{\\mathrm{call}}$)", ha="center", va="center", fontsize=4.2, weight="bold", color=C_LLM_TXT, zorder=5)
+    ax.text(11.25, 32.6, "Model Weights 8B–14B", ha="center", va="center", fontsize=3.6, color=C_LLM_TXT, zorder=5)
+    ax.plot([19.5, 22.2], [33.7, 36.0], color=C_LLM_TXT, lw=0.8, linestyle=":", zorder=3)
+
+    # --- TELCO EDGE EMPTY SPACE NOTE ---
+    # Note on right side: Example Chain Topology
+    ax.add_patch(FancyBboxPatch((38.0, 31.0), 59.0, 12.5, boxstyle="round,pad=0.25",
+                                fc="#ffffff", ec="#cbd5e1", lw=0.8, zorder=3))
+    ax.text(67.5, 41.2, "Example Chain Topology",
+            ha="center", va="center", fontsize=4.9, weight="bold", color="#0f172a", zorder=4)
+    ax.text(67.5, 38.5, "$a_1 \\longrightarrow a_2 \\longrightarrow a_3 \\longrightarrow a_4 \\longrightarrow a_5 \\longrightarrow a_6$",
+            ha="center", va="center", fontsize=4.2, weight="bold", color="#0369a1", zorder=4)
+    ax.text(67.5, 35.8, "• Distributed sequential pipeline across Far Edge, Telco MEC, and Core Cloud",
+            ha="center", va="center", fontsize=3.6, color=C_SLATE, zorder=4)
+    ax.text(67.5, 33.2, "• Context $c_a$ accumulates along sequence across multi-step execution",
+            ha="center", va="center", fontsize=3.6, color=C_SLATE, zorder=4)
+
+    # --- CORE CLOUD TIER ---
+    # Core LLM Engine on the left (ec = fc)
+    ax.add_patch(FancyBboxPatch((3.0, 56.5), 32.0, 11.0, boxstyle="round,pad=0.2",
+                                fc=C_LLM_FC, ec=C_LLM_FC, lw=0, zorder=3))
+    ax.text(19.0, 64.8, "Core LLM Engine ($E_{\\mathrm{call}}$)", ha="center", va="center",
+            fontsize=4.8, weight="bold", color=C_LLM_TXT, zorder=5)
+    ax.text(19.0, 61.8, "Model weights $\\beta N_{\\mathrm{params}}$ (70B / 27B)", ha="center", va="center",
+            fontsize=4.1, weight="bold", color="#581c87", zorder=5)
+    ax.text(19.0, 58.8, "Shared serving pool for $a_4, a_5, a_6$", ha="center", va="center",
+            fontsize=3.8, color="#581c87", zorder=5)
+
+    pos_a4 = (47.0, 59.0)
+    pos_a5 = (65.0, 59.0)
+    pos_a6 = (83.0, 59.0)
+
+    # Agents a4, a5, a6
+    for pos, label, c_lbl in [(pos_a4, "a_4", "c_4"), (pos_a5, "a_5", "c_5"), (pos_a6, "a_6", "c_6")]:
+        ax.add_patch(Circle(pos, R_NODE, fc=C_AGENT_FC, ec=C_AGENT_FC, lw=0, zorder=4))
+        ax.text(pos[0], pos[1] + 0.3, f"${label}$", ha="center", va="center", fontsize=5.6, weight="bold", color=C_AGENT_TXT, zorder=5)
+        ax.text(pos[0], pos[1] - 1.5, f"${c_lbl}$", ha="center", va="center", fontsize=3.7, color="#0284c7", zorder=5)
+
+    # Cross-tier hand-off from a3 to a4 (across Metro Bearer)
+    ax.add_patch(FancyArrowPatch(pos_a3, pos_a4, arrowstyle="-|>", mutation_scale=8,
+                                 shrinkA=9, shrinkB=9, lw=1.5, color=C_RED, connectionstyle="arc3,rad=-0.02", zorder=3))
+
+    # Intra-tier hand-offs in Core Cloud: a4 -> a5 -> a6
+    ax.add_patch(FancyArrowPatch(pos_a4, pos_a5, arrowstyle="-|>", mutation_scale=6,
+                                 shrinkA=8, shrinkB=8, lw=1.0, color=C_GRAY, zorder=3))
+    ax.add_patch(FancyArrowPatch(pos_a5, pos_a6, arrowstyle="-|>", mutation_scale=6,
+                                 shrinkA=8, shrinkB=8, lw=1.0, color=C_GRAY, zorder=3))
+
+    # Shared LLM Inference Bus along top of Core Cloud (Y = 66.5)
+    ax.plot([35.0, 83.0], [66.5, 66.5], color=C_LLM_TXT, lw=0.8, linestyle=":", zorder=3)
+    ax.text(56.0, 68.0, "Inference Calls ($E_{\\mathrm{call}}$)", fontsize=3.8, color=C_LLM_TXT, weight="bold", ha="center", zorder=4)
+
+    # Vertical drops from bus to each agent
+    for pos in [pos_a4, pos_a5, pos_a6]:
+        ax.plot([pos[0], pos[0]], [66.5, pos[1] + R_NODE], color=C_LLM_TXT, lw=0.8, linestyle=":", zorder=3)
+
+    # -------------------------------------------------------------------------
+    # 4. AgECAL Workflow Energy Accounting Callout Box (INCREASED SPACING BELOW EQ. 3)
+    # -------------------------------------------------------------------------
+    # Box spans Y: [2.3, 19.3] (height 17.0 units)
+    ax.add_patch(FancyBboxPatch((34.0, 2.3), 64.0, 17.0, boxstyle="round,pad=0.25",
+                                fc="#fffbeb", ec="#fde68a", lw=0.8, zorder=4))
+
+    # Title: top of box
+    ax.text(66.0, 18.10, "AgECAL WORKFLOW ENERGY ACCOUNTING", ha="center", va="center",
+            fontsize=4.7, weight="bold", color="#92400e", zorder=5)
+
+    # Master Equation (Eq. 3): placed at 15.25 (gap to title: 2.85 units; gap to bullet 1: 3.55 units!)
+    ax.text(66.0, 14.35, "$E_W = (1+\\gamma_{\\mathrm{v}}) \\, [\\sum E_{\\mathrm{call}} + \\sum E_{\\mathrm{tool}} + \\sum E_{\\mathrm{ret}} + E_{\\mathrm{tx}}] \\quad \\mathbf{(Eq.\\,3)}$",
+            ha="center", va="center", fontsize=4.2, color="#1e3a8a", weight="bold", zorder=5)
+
+    # Component Breakdowns: shifted down to give generous 3.55 units gap below Eq. 3
+    ax.text(35.5, 11.10, "• LLM Inference ($E_{\\mathrm{call}}$): compute-bound prefill + memory-bound decode",
+            fontsize=3.8, color="#78350f", zorder=5)
+
+    ax.text(35.5, 8.95, "• Diagnostics & RAG ($E_{\\mathrm{tool}}, E_{\\mathrm{ret}}$): local tool exec + vector search",
+            fontsize=3.8, color="#78350f", zorder=5)
+
+    ax.text(35.5, 6.80, "• Data Transport ($E_{\\mathrm{tx}}$): 7-layer OSI stack (negligible $E_{\\mathrm{tx}} \\ll E_W$)",
+            fontsize=3.8, color="#92400e", zorder=5)
+
+    ax.text(35.5, 4.65, "• Memory Feasibility: weights $\\beta N_{\\mathrm{params}}$ + dynamic context $\\gamma \\sum c_a \\leq M_u$ (Eq. 1)",
+            fontsize=3.8, color="#78350f", zorder=5)
+
+    plt.subplots_adjust(left=0.005, right=0.995, top=0.995, bottom=0.005)
+    fig.savefig(out_pdf, bbox_inches="tight", pad_inches=0.01)
+    plt.close(fig)
+    print("Generated:", out_pdf)
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else OUT_DEFAULT)
+    build_figure()
