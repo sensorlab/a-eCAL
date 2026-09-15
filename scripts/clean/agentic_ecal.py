@@ -9,9 +9,11 @@ Workflows with Open-Weight Models". It contains the model only -- no plotting, n
 no pandas/matplotlib import -- so it can be imported and tested on its own. Figures live in
 ``make_figures.py``.
 
-The call model is SINGLE-RATE: energy is FLOPs / effective-FLOP/s * power, with utilisation
-``eta`` (MFU) as the single calibration knob. It therefore has no serving-batch term; that
-limitation is a stated result of the paper, quantified by ``make_figures.fig_validation``.
+The call model is TWO-RATE: prefill is compute-bound and priced at ``eta_pre``, decode is
+memory-bandwidth-bound and amortises the weight read over the serving batch. Energy therefore
+carries a batch term and no MFU knob. ``mfu`` survives on ``Hardware`` only for the retrieval
+term; the single-rate form it belonged to was retired, and Table II of the paper is the
+cross-hardware check on what replaced it.
 
 Numeric constants (J/token, MFU, pre-training energy) are grounded in the literature; see
 ``docs/research-notes.md`` for the source of each value. All energies are in Joules unless noted.
@@ -65,8 +67,14 @@ class Hardware:
     power: float               # board power drawn while busy [W]
     mfu: float = 0.10          # default: mid latency/throughput regime
     bandwidth: float = 0.0     # B_HBM, peak HBM bandwidth [byte/s]
-    eta_pre: float = 0.85      # prefill utilisation; compute-bound, so near peak
-    bw_efficiency: float = 0.70   # sustained fraction of peak HBM bandwidth
+    eta_pre: float = 0.85      # prefill utilisation; compute-bound, so near peak. Back-solving
+                               # the fitted c_pre of TWO_RATE gives 0.74 (Llama-3.1-8B) and
+                               # 0.85 (Qwen2.5-7B) on the A100 sweeps.
+    bw_efficiency: float = 0.70   # eps, sustained fraction of peak HBM bandwidth. Reported MBU
+                                  # is 72% (pytorch.org/blog/accelerating-generative-ai-2) and
+                                  # 55-60% (databricks.com/blog/llm-inference-performance-
+                                  # engineering-best-practices), both at batch 1. See the
+                                  # two-rate comment block for why it degrades with batch.
 
     @property
     def flops_eff(self) -> float:
@@ -77,15 +85,24 @@ class Hardware:
 # Representative accelerators. Specs from vendor datasheets (see research-notes.md).
 # H100 SXM bf16 dense ~989 TFLOP/s (with sparsity ~1979); board power ~700 W.
 # A100 80GB bf16 dense ~312 TFLOP/s; board power ~400 W (SXM).
-# MFU regimes calibrated so the 65B model reproduces Samsi et al.'s measured 3-4 J/token anchor
-# at MFU_LATENCY (single-stream, unbatched), with batched serving at MFU_THROUGHPUT.
-MFU_LATENCY = 0.05      # single-stream / latency-bound decode (reproduces 3-4 J/token for 65B, Samsi 2023)
-MFU_THROUGHPUT = 0.25   # throughput-optimized batched serving (reproduces ~0.39 J/token Llama-3 70B, 2026)
+
+# MFU_LATENCY / MFU_THROUGHPUT are residues of the retired single-rate model. Nothing in the
+# two-rate path reads them; they survive only through Hardware.mfu, which prices the retrieval
+# term. The throughput value's old comment claimed 0.25 "reproduces ~0.39 J/token Llama-3 70B",
+# which was a calibration claim about the model that no longer exists (see validate_current_gen).
+MFU_LATENCY = 0.05      # single-stream / latency-bound decode
+MFU_THROUGHPUT = 0.25   # throughput-optimized batched serving
 
 HW = {
     "h100": Hardware("NVIDIA H100 SXM", flops_peak=989e12, power=700.0, mfu=MFU_LATENCY,
                      bandwidth=3.35e12),
-    "a100": Hardware("NVIDIA A100 80GB", flops_peak=312e12, power=400.0, mfu=MFU_LATENCY,
+    # H100 NVL, the board TokenPowerBench actually ran on. Their released results record
+    # gpu_memory_total_mb = 95830 (94 GB, against the SXM's 80) and a per-GPU draw that caps at
+    # 394.5 W over all 185 runs, so the 700 W / 3.35 TB/s SXM entry above misprices every number
+    # taken from that source by ~2x. NVL: 94 GB HBM3, 3.9 TB/s, 400 W board cap.
+    "h100_nvl": Hardware("NVIDIA H100 NVL 94GB", flops_peak=989e12, power=400.0,
+                         mfu=MFU_LATENCY, bandwidth=3.9e12),
+    "a100": Hardware(  "NVIDIA A100 80GB", flops_peak=312e12, power=400.0, mfu=MFU_LATENCY,
                      bandwidth=2.039e12),
 }
 
@@ -131,8 +148,9 @@ LLMS = {
     # Llama-3 70B: 80 layers, d_model 8192.
     "llama3_70b": LLM("Llama-3 70B", n_params=70.6e9, n_layers=80, d_model=8192,
                       e_pretrain=4.48 * GWH_TO_J, d_kv=1024),
-    # LLaMA-65B: 80 layers, d_model 8192. Validates eta against Samsi et al. (2023), and carries
-    # the first-generation embodied cost in the amortization figure.
+    # LLaMA-65B: 80 layers, d_model 8192. Retained only to back validate_against_samsi(); it was
+    # dropped from Table II and from the amortization figure. No explicit d_kv, so d_kv = d_model
+    # = 8192 -- multi-head attention, correct for LLaMA-1 and 8x the 70B's GQA width.
     #   65B : 1,022,362 A100-h x 400 W = 0.409 GWh = 1.47e12 J
     # Same convention as the Llama-3 entries above (GPU-hours x TDP, no PUE), which is why this
     # is below the 449 MWh the LLaMA paper reports for the same run.
@@ -167,10 +185,26 @@ LLMS = {
 #
 #   c_dec(b) = P / (eps B_HBM) * ( N beta / b  +  gamma * cbar )            (the decode rate)
 #
-# eps is the fraction of peak HBM bandwidth production kernels sustain, conventionally
-# 0.65-0.85. Omitting it (eps = 1) makes the model under-predict measured energy by 17-66%;
-# at eps = 0.70 the fit over 756 measured configurations is R^2 = 0.99 with no free
-# parameter. It is a datasheet-adjacent constant, not a calibration knob.
+# eps is the fraction of peak HBM bandwidth a serving stack actually sustains, reported as
+# model-bandwidth utilisation, (achieved bandwidth) / (peak bandwidth). Measured values:
+#
+#   72%  Llama-7B fp16, A100-80GB, batch 1, torch.compile + static KV cache
+#        https://pytorch.org/blog/accelerating-generative-ai-2/
+#        (that post also notes the ceiling is under 85%: "even just copying memory
+#         struggles to break" it)
+#   60%  2 x H100-80GB, batch 1   |   55%  4 x A100-40GB, batch 1
+#        https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices
+#
+# Hence 0.70. Two cautions, both established against measured data rather than asserted:
+#
+#   - Batch 1 is the FAVOURABLE case: the weight read dominates and arithmetic intensity is
+#     lowest. eps falls as b grows. Backing it out of TokenPowerBench's released decode
+#     durations gives 0.41 at b=32, 0.22 at b=128 and 0.14 at b=256, so a fixed eps makes
+#     this a bound that loosens with batch, not a point prediction.
+#   - An earlier version of this comment justified 0.70 by "R^2 = 0.99 over 756 measured
+#     configurations". That does not test eps: R^2 measures how well the model tracks
+#     variation across configurations and is untouched by a constant multiplicative bias.
+#     The figures above are the actual grounds.
 #
 
 def prefill_rate(model: LLM, hw: Hardware) -> float:
@@ -586,6 +620,10 @@ def implied_batch(model: LLM, hw: Hardware, j_per_token: float,
 def validate_against_samsi() -> dict:
     """Samsi et al. (2023) measured 3-4 J/token for LLaMA-65B on A100s.
 
+    Retained as a diagnostic only: the Table II row this used to back was DROPPED, because a 2023
+    sweep billing 8-32 shards at 300 W-1 kW aggregate sat far below the bandwidth roofline the
+    decode rate assumes. See table2-row1-options.md.
+
     Under the decode rate the b = 1 limit is P N beta / B_HBM = 25.6 J/token, so that anchor cannot be a
     single-stream measurement; it implies a serving batch of roughly 7-9. Tensor parallelism does
     not change this, since sharding over n devices divides the bytes each reads by n while
@@ -598,12 +636,24 @@ def validate_against_samsi() -> dict:
 
 
 def validate_current_gen() -> dict:
-    """2026 anchors: Llama-3 70B FP8 on H100 at ~0.39 J/token (TokenPowerBench)."""
-    hw = HW["h100"]
-    return {"llama3_70b implied batch at 0.39 J/token":
-            round(implied_batch(LLMS["llama3_70b"], hw, 0.39), 1),
-            "llama3_8b implied batch at 0.11 J/token":
-            round(implied_batch(LLMS["llama3_8b"], hw, 0.11), 1)}
+    """2026 anchors from TokenPowerBench, on the board it actually ran (H100 NVL).
+
+    The 0.70 J/token used here for the 70B and the 0.39 it replaced are BOTH figure reads of that
+    paper, from different panels; 0.39 is not fabricated, contrary to an earlier note in
+    ``table2-row2-options.md``. 0.70 is corroborated by the paper's own text: it reports energy
+    per token rising 7.3x from Llama3-1B to 70B, and its Fig. 4 puts the 1B near 0.10 J/token.
+    Which panel 0.39 came from is not yet settled -- the engine comparison is the likely source,
+    since the same text reports TensorRT-LLM and vLLM cutting energy per token 25-40% below
+    Transformers, and 0.70 x 0.6 = 0.42.
+
+    The 8B anchor below is not a figure read at all: it is the released per-run data, 0.084
+    J/token on the active device at batch 32.
+    """
+    hw = HW["h100_nvl"]
+    return {"llama3_70b implied batch at 0.70 J/token (Fig. 3b)":
+            round(implied_batch(LLMS["llama3_70b"], hw, 0.70), 1),
+            "llama3_8b implied batch at 0.084 J/token (released runs, active GPU)":
+            round(implied_batch(LLMS["llama3_8b"], hw, 0.084, p_in=50, p_out=382), 1)}
 
 
 if __name__ == "__main__":
