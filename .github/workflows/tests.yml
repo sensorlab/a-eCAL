@@ -25,11 +25,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
 
-      - name: Create the virtual environment
-        run: uv venv --python ${{ matrix.python-version }}
-
-      - name: Install the package and test dependencies
-        run: uv pip install -e ".[dev]"
-
+      # `uv run` creates/syncs the project environment (installing the package and the [dev]
+      # extra) and runs the command in it. It reuses an existing .venv without erroring.
       - name: Run tests
-        run: .venv/bin/python -m pytest -q
+        run: uv run --python ${{ matrix.python-version }} --extra dev python -m pytest -q
