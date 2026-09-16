@@ -1,0 +1,32 @@
+name: tests
+
+# Run the golden-master parity suite on every push and pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:        # allow manual runs from the Actions tab
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The model is stdlib-only; test across every supported interpreter.
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv (with Python ${{ matrix.python-version }})
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install the package and test dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run tests
+        run: python -m pytest -q

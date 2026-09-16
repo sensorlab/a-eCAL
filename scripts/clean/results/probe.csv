@@ -1,3 +1,0 @@
-model,task,decode_batch,team_size,rounds,carry_history,run_id,n_queries,per_query_energy_j,per_query_in_tok,per_query_out_tok,wall_latency_s
-Qwen/Qwen2.5-7B-Instruct,mmlu_hard,16,2,3,0,0,32,163.504,1843.1,506.0,17.7
-Qwen/Qwen2.5-7B-Instruct,mmlu_hard,256,2,3,0,0,32,103.805,1839.6,515.4,11.31
