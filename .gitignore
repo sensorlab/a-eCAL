@@ -49,16 +49,14 @@ Topologies_AAAI*.pdf
 # Infra-Bench lives in its own repository; this is a local working copy, not a vendored dependency.
 agent-infra/
 
-experimental_results/*
-experiments_qwen3_8_27B/*
-experiments_qwen35_9B/*
-experiments_fig12/*
+# Experiment directories: data and per-experiment code are kept out of this repo.
+experimental_results/
+experiments_qwen3_8_27B/
+experiments_qwen35_9B/
+experiments_fig12/
+
 *.pdf
 *.tex
-*.md
-# ...but the repo-root README is a deliverable and must be tracked. Anchored to the root so it
-# does not un-ignore README.md files inside the ignored experiment directories.
-!/README.md
 
 .claude
 results/*
