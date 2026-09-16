@@ -56,8 +56,9 @@ experiments_fig12/*
 *.pdf
 *.tex
 *.md
-# ...but the package README is a deliverable and must be tracked.
-!README.md
+# ...but the repo-root README is a deliverable and must be tracked. Anchored to the root so it
+# does not un-ignore README.md files inside the ignored experiment directories.
+!/README.md
 
 .claude
 results/*
