@@ -1,5 +1,9 @@
-# The model (scripts/clean/agentic_ecal.py) is pure-Python, stdlib only.
+# The model (scripts/clean/agentic_ecal_pkg/, and the legacy scripts/clean/agentic_ecal.py) is
+# pure-Python, stdlib only.
 # These are needed to load the measured sweeps and regenerate the figures.
 numpy>=1.24
 pandas>=2.0
 matplotlib>=3.7
+
+# Dev / test: the parity suite under scripts/clean/tests/.
+pytest>=7

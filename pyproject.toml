@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-ecal"
+version = "0.1.0"
+description = "Analytical two-rate energy model for agentic workflows of open-weight LLMs."
+readme = "README.md"
+requires-python = ">=3.9"
+# The model is pure-Python, standard library only.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+agentic-ecal = "agentic_ecal_pkg.cli:main"
+
+[tool.setuptools]
+# Ship only the package; the retained flat agentic_ecal.py (golden-master reference) and the
+# figure_scripts/ are intentionally excluded from the distribution.
+packages = ["agentic_ecal_pkg"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
